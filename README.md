@@ -34,7 +34,28 @@ DOCKER_BUILDKIT=1 docker build \
   .
 ```
 
+Then run it:
 
+```sh
+# with CUDA:
+docker run -d --gpus=all -v ollama:/root/.ollama -p 11434:11434 --name ollama docker.io/library/ollama-cuda:13
+```
+
+Once it's up and running (and localhost:11434 answers with "Ollama is running") enter the CT to pull models:
+
+```sh
+docker exec -it ollama /bin/bash
+
+# This enters the container to install gpt-oss
+ollama pull gpt-oss:20b
+
+# Or a fancy one from huggingface
+ollama pull hf.co/Jackrong/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-GGUF:Q3_K_M # 13.3GB
+ollama pull hf.co/Jackrong/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-GGUF:Q4_K_S # 15.6GB
+ollama pull hf.co/Jackrong/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-GGUF:Q4_K_M # 16.5GB
+
+# They will be available right away
+```
 
 ## Download
 

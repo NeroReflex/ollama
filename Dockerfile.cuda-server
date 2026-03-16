@@ -1,0 +1,75 @@
+# syntax=docker/dockerfile:1.6
+# vim: filetype=dockerfile
+
+# CUDA 13 first; override to CUDA 12 images if your registry/host does not provide 13.x yet.
+ARG CUDA_DEV_IMAGE=nvidia/cuda:13.0.0-devel-ubuntu24.04
+ARG CUDA_RUN_IMAGE=nvidia/cuda:13.0.0-runtime-ubuntu24.04
+ARG CUDA_MAJOR=13
+
+FROM ${CUDA_DEV_IMAGE} AS build
+ARG CUDA_MAJOR
+
+ENV DEBIAN_FRONTEND=noninteractive
+WORKDIR /src
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        cmake \
+        curl \
+        git \
+        ninja-build \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY go.mod go.sum ./
+RUN curl -fsSL "https://golang.org/dl/go$(awk '/^go/ { print $2 }' go.mod).linux-$(dpkg --print-architecture | sed 's/amd64/amd64/;s/arm64/arm64/').tar.gz" \
+    | tar xz -C /usr/local
+ENV PATH=/usr/local/go/bin:${PATH}
+
+RUN go mod download
+
+COPY . .
+
+# Install CPU base runtime first, then CUDA runtime variant.
+RUN cmake --preset CPU \
+    && cmake --build --preset CPU -- -l "$(nproc)" \
+    && cmake --install build --component CPU --strip
+
+RUN set -eux; \
+    if [ "${CUDA_MAJOR}" = "13" ]; then \
+        preset="CUDA 13"; \
+    else \
+        preset="CUDA 12"; \
+    fi; \
+    cmake --preset "${preset}"; \
+    cmake --build --preset "${preset}" -- -l "$(nproc)"; \
+    cmake --install build --component CUDA --strip
+
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=1 go build -trimpath -buildmode=pie -ldflags="-w -s" -o /out/ollama .
+
+FROM ${CUDA_RUN_IMAGE} AS runtime
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        libgomp1 \
+        libopenblas0 \
+        libstdc++6 \
+        libvulkan1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /out/ollama /usr/bin/ollama
+COPY --from=build /src/dist/lib/ollama /usr/lib/ollama
+
+ENV OLLAMA_HOST=0.0.0.0:11434
+ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+ENV NVIDIA_VISIBLE_DEVICES=all
+
+EXPOSE 11434
+ENTRYPOINT ["/usr/bin/ollama"]
+CMD ["serve"]

@@ -8,6 +8,34 @@
 
 Start building with open models.
 
+## SUPER QUICKSTART
+
+First install required stuff:
+
+```sh
+sudo pacman -S nvidia-utils nvidia-container-toolkit
+```
+
+Then configure docker for [nvidia](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html#configuring-docker) usage:
+
+```sh
+sudo nvidia-ctk runtime configure --runtime=docker
+```
+
+Then build the image:
+
+```sh
+docker build \
+  -f Dockerfile.cuda-server \
+  -t ollama-cuda:13 \
+  --build-arg CUDA_DEV_IMAGE=nvidia/cuda:13.0.0-devel-ubuntu24.04 \
+  --build-arg CUDA_RUN_IMAGE=nvidia/cuda:13.0.0-runtime-ubuntu24.04 \
+  --build-arg CUDA_MAJOR=13 \
+  .
+```
+
+
+
 ## Download
 
 ### macOS

@@ -2,6 +2,7 @@
 
 #include "llama-impl.h"
 
+#include <iostream>
 #include <map>
 #include <set>
 
@@ -2448,6 +2449,17 @@ llm_arch llm_arch_from_string(const std::string & name) {
         if (kv.second == name) {
             return kv.first;
         }
+    }
+
+    // Ollama-generated GGUF files may use "qwen35" / "qwen35moe" for the
+    // Qwen 3.5 family.  Map both to the existing qwen3next backend which
+    // shares the same tensor layout and hyper-parameters.
+    if (name == "qwen35") {
+        std::cerr << "warning: model architecture name 'qwen35' is fucked" << std::endl;
+        return LLM_ARCH_QWEN3NEXT;
+    } else if (name == "qwen35moe") {
+        std::cerr << "warning: model architecture name 'qwen35moe' is fucked" << std::endl;
+        return LLM_ARCH_QWEN3NEXT;
     }
 
     return LLM_ARCH_UNKNOWN;

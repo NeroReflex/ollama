@@ -421,6 +421,22 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
         GGML_ASSERT(pool_size == 0);
     }
 
+    void trim() override {
+        ggml_cuda_set_device(device);
+        for (int i = 0; i < MAX_BUFFERS; ++i) {
+            ggml_cuda_buffer & b = buffer_pool[i];
+            if (b.ptr != nullptr) {
+                if (allocate) {
+                    CUDA_CHECK(cudaFree(b.ptr));
+                }
+                pool_size -= b.size;
+                b.ptr = nullptr;
+                b.size = 0;
+            }
+        }
+        GGML_ASSERT(pool_size == 0);
+    }
+
     void * alloc(size_t size, size_t * actual_size) override {
 #ifdef DEBUG_CUDA_MALLOC
         int nnz = 0;
@@ -465,8 +481,11 @@ struct ggml_cuda_pool_leg : public ggml_cuda_pool {
         if (allocate) {
             ggml_cuda_set_device(device);
             if (ggml_cuda_device_malloc(&ptr, look_ahead_size, device) != cudaSuccess) {
+                trim();
+                if (ggml_cuda_device_malloc(&ptr, look_ahead_size, device) != cudaSuccess) {
                     last_alloc = look_ahead_size;
                     throw std::bad_alloc();
+                }
             }
         } else {
             ptr = (void *)CUDA_ALIGNMENT;
@@ -545,6 +564,35 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
         }
     }
 
+    void trim() override {
+        if (!allocate || pool_addr == 0 || pool_size == pool_used) {
+            return;
+        }
+
+        const size_t trim_size = pool_size - pool_used;
+        const CUdeviceptr trim_addr = (CUdeviceptr)((char *)(pool_addr) + pool_used);
+
+#if defined(GGML_USE_HIP)
+        while (!mappings.empty()) {
+            const std::pair<CUdeviceptr, size_t> & mapping = mappings.back();
+            if (mapping.first + mapping.second != (CUdeviceptr)((char *)(pool_addr) + pool_size)) {
+                break;
+            }
+
+            CU_CHECK(cuMemUnmap(mapping.first, mapping.second));
+            pool_size -= mapping.second;
+            mappings.pop_back();
+
+            if (pool_size == pool_used) {
+                break;
+            }
+        }
+#else
+        CU_CHECK(cuMemUnmap(trim_addr, trim_size));
+        pool_size = pool_used;
+#endif
+    }
+
     void * alloc(size_t size, size_t * actual_size) override {
         // round up the allocation size to the alignment to ensure that all allocations are aligned for all data types
         const size_t alignment = 128;
@@ -567,8 +615,11 @@ struct ggml_cuda_pool_vmm : public ggml_cuda_pool {
                 prop.location.id = device;
                 CUmemGenericAllocationHandle handle;
                 if (cuMemCreate(&handle, reserve_size, &prop, 0) != CUDA_SUCCESS) {
-                    last_alloc = reserve_size;
-                    throw std::bad_alloc();
+                    trim();
+                    if (cuMemCreate(&handle, reserve_size, &prop, 0) != CUDA_SUCCESS) {
+                        last_alloc = reserve_size;
+                        throw std::bad_alloc();
+                    }
                 }
 
                 // reserve virtual address space (if not already reserved)

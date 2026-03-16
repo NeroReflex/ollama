@@ -976,6 +976,7 @@ struct ggml_cuda_pool {
 
     virtual void * alloc(size_t size, size_t * actual_size) = 0;
     virtual void free(void * ptr, size_t size) = 0;
+    virtual void trim() = 0;
 
     virtual bool alloc_memory() = 0;
     virtual size_t alloc_size() = 0;

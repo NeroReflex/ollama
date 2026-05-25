@@ -16,3 +16,5 @@ llama/build
 llama/vendor
 /ollama
 integration/testdata/models/
+/build
+/build_sm89

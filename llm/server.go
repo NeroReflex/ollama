@@ -1087,7 +1087,7 @@ nextLayer:
 		}
 	}
 
-	if len(systemGPUs) > 0 && gpuLayers.Sum() == 0 {
+	if len(systemGPUs) > 0 && gpuLayers.Sum() == 0 && s.options.NumGPU != 0 {
 		slog.Info("model would load on cpu only despite available gpu devices", "loaded layers", gpuLayers.Sum())
 		return ErrLoadRequiredFull
 	}

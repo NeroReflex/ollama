@@ -12,6 +12,9 @@ func skipIfNoMLX(t *testing.T) {
 	if err := mlx.CheckInit(); err != nil {
 		t.Skipf("MLX not available: %v", err)
 	}
+	if !mlx.CudaHeadersAvailable() {
+		t.Skip("CUDA headers not available")
+	}
 }
 
 func approxEqual(a, b, tol float32) bool {

@@ -132,12 +132,12 @@ func TestLLMServerFitGPU(t *testing.T) {
 			expected: ml.GPULayersList{{DeviceID: ml.DeviceID{ID: "gpu1", Library: "ROCm"}, Layers: []int{0, 1}}},
 		},
 		{
-			name:        "requireFull",
+			name:        "requireFull partial offload",
 			gpus:        []ml.DeviceInfo{{DeviceID: ml.DeviceID{ID: "gpu0"}, FreeMemory: uint64(256*format.MebiByte + minMemory)}},
 			layers:      []int{100 * format.MebiByte, 100 * format.MebiByte, 100 * format.MebiByte, 100 * format.MebiByte},
 			numGPU:      -1,
 			requireFull: true,
-			expectedErr: ErrLoadRequiredFull,
+			expected:    ml.GPULayersList{{DeviceID: ml.DeviceID{ID: "gpu0"}, Layers: []int{1, 2}}},
 		},
 		{
 			name:        "requireFull numGPU",

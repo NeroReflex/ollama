@@ -178,10 +178,14 @@ func New(modelPath string, params ml.BackendParams) (ml.Backend, error) {
 	}
 
 	requiredMemory.CPU.Name = C.GoString(C.ggml_backend_dev_name(cpuDeviceBufferType.d))
+	requiredMemory.CPU.Library = C.GoString(C.ggml_backend_dev_name(cpuDeviceBufferType.d))
 	var props C.struct_ggml_backend_dev_props
 	C.ggml_backend_dev_get_props(cpuDeviceBufferType.d, &props)
-	requiredMemory.CPU.ID = C.GoString(props.id)
-	requiredMemory.CPU.Library = C.GoString(props.library)
+	if props.device_id != nil {
+		requiredMemory.CPU.ID = C.GoString(props.device_id)
+	} else {
+		requiredMemory.CPU.ID = C.GoString(C.ggml_backend_dev_name(cpuDeviceBufferType.d))
+	}
 	requiredMemory.CPU.Weights = make([]uint64, blocks+1)
 	requiredMemory.CPU.Cache = make([]uint64, blocks+1)
 
@@ -197,10 +201,14 @@ func New(modelPath string, params ml.BackendParams) (ml.Backend, error) {
 
 		btDeviceMemory[bt] = &requiredMemory.GPUs[i]
 		requiredMemory.GPUs[i].Name = C.GoString(C.ggml_backend_dev_name(d))
+		requiredMemory.GPUs[i].Library = C.GoString(C.ggml_backend_dev_name(d))
 		var props C.struct_ggml_backend_dev_props
 		C.ggml_backend_dev_get_props(d, &props)
-		requiredMemory.GPUs[i].ID = C.GoString(props.id)
-		requiredMemory.GPUs[i].Library = C.GoString(props.library)
+		if props.device_id != nil {
+			requiredMemory.GPUs[i].ID = C.GoString(props.device_id)
+		} else {
+			requiredMemory.GPUs[i].ID = C.GoString(C.ggml_backend_dev_name(d))
+		}
 		requiredMemory.GPUs[i].Weights = make([]uint64, blocks+1)
 		requiredMemory.GPUs[i].Cache = make([]uint64, blocks+1)
 	}
@@ -388,14 +396,13 @@ func New(modelPath string, params ml.BackendParams) (ml.Backend, error) {
 
 	maxGraphNodes := max(1024, len(meta.Tensors().Items())*32)
 
-	sched := C.ggml_backend_sched_new_ext(
+	sched := C.ggml_backend_sched_new(
 		(*C.ggml_backend_t)(unsafe.Pointer(&schedBackends[0])),
 		(*C.ggml_backend_buffer_type_t)(unsafe.Pointer(&schedBufts[0])),
 		C.int(len(schedBackends)),
 		C.size_t(maxGraphNodes),
 		C._Bool(false),
 		C._Bool(true),
-		C._Bool(params.AllocMemory),
 	)
 
 	// allocate buffers for each context
@@ -633,18 +640,6 @@ func (b *Backend) Load(ctx context.Context, progress func(float32)) error {
 		})
 	}
 
-	// Cleanup any backend state from devices that we didn't end up using
-nextDevice:
-	for _, d := range append(gpus, append(accels, cpus...)...) {
-		for _, backend := range b.schedBackends {
-			if d == C.ggml_backend_get_device(backend) {
-				continue nextDevice
-			}
-		}
-
-		C.ggml_backend_dev_reset(d)
-	}
-
 	if err := g.Wait(); err != nil {
 		return err
 	}
@@ -723,19 +718,18 @@ func (b *Backend) BackendDevices() []ml.DeviceInfo {
 		C.ggml_backend_dev_get_props(dev, &props)
 		info.Name = C.GoString(props.name)
 		info.Description = C.GoString(props.description)
-		info.ID = C.GoString(props.id)
-		info.Library = C.GoString(props.library)
-		info.ComputeMajor = (int)(props.compute_major)
-		info.ComputeMinor = (int)(props.compute_minor)
-		info.DriverMajor = (int)(props.driver_major)
-		info.DriverMinor = (int)(props.driver_minor)
-		info.Integrated = props.integrated != 0
-		if props.library != nil {
-			info.Library = C.GoString(props.library)
-		}
+		info.Library = C.GoString(C.ggml_backend_dev_name(dev))
 		if props.device_id != nil {
+			info.ID = C.GoString(props.device_id)
 			info.PCIID = C.GoString(props.device_id)
+		} else {
+			info.ID = info.Name
 		}
+		info.ComputeMajor = -1
+		info.ComputeMinor = -1
+		info.DriverMajor = -1
+		info.DriverMinor = -1
+		info.Integrated = props._type == C.GGML_BACKEND_DEVICE_TYPE_IGPU
 		info.LibraryPath = ggml.LibPaths()
 		C.ggml_backend_dev_memory(dev, &props.memory_free, &props.memory_total)
 		info.TotalMemory = (uint64)(props.memory_total)
@@ -827,7 +821,6 @@ func (c *Context) ComputeWithNotify(cb func(), tensors ...ml.Tensor) {
 	}
 
 	if c.batchSize > 0 {
-		C.ggml_backend_sched_set_batch_size(c.b.sched, C.int(c.batchSize))
 	}
 
 	if status := C.ggml_backend_sched_graph_compute_async(c.b.sched, c.graph); status != C.GGML_STATUS_SUCCESS {
@@ -852,7 +845,6 @@ func (c *Context) ComputeWithNotify(cb func(), tensors ...ml.Tensor) {
 
 func (c *Context) Reserve() {
 	if c.batchSize > 0 {
-		C.ggml_backend_sched_set_batch_size(c.b.sched, C.int(c.batchSize))
 	}
 
 	reserved := C.ggml_backend_sched_reserve(c.b.sched, c.graph)
@@ -865,7 +857,7 @@ func (c *Context) Reserve() {
 	}
 
 	for i := range c.b.schedBackends {
-		bufferSize := C.ggml_backend_sched_get_attempted_buffer_size(c.b.sched, c.b.schedBackends[i])
+		bufferSize := C.ggml_backend_sched_get_buffer_size(c.b.sched, c.b.schedBackends[i])
 		c.b.btDeviceMemory[c.b.schedBufts[i]].Graph += uint64(bufferSize)
 
 		logutil.Trace("compute graph", "backend", C.GoString(C.ggml_backend_name(c.b.schedBackends[i])),

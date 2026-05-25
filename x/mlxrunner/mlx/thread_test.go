@@ -14,6 +14,9 @@ func skipIfNoMLX(t *testing.T) {
 	if err := CheckInit(); err != nil {
 		t.Skipf("MLX not available: %v", err)
 	}
+	if !cudaHeadersAvailable() {
+		t.Skip("CUDA headers not available")
+	}
 }
 
 func startMLXThread(t *testing.T) *mlxthread.Thread {

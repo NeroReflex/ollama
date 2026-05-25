@@ -35,6 +35,12 @@ enum resize_algo {
     // RESIZE_ALGO_LANCZOS, // TODO
 };
 
+enum pad_style {
+    PAD_NONE,
+    PAD_CEIL,
+    PAD_NEAREST,
+};
+
 struct clip_hparams {
     int32_t image_size = 0;
     int32_t patch_size = 0;

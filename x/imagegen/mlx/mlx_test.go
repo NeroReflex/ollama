@@ -19,6 +19,11 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
+	if !cudaHeadersAvailable() {
+		fmt.Println("Skipping MLX tests: CUDA headers not available")
+		os.Exit(0)
+	}
+
 	if err := InitMLX(); err != nil {
 		fmt.Printf("Skipping MLX tests: %v\n", err)
 		os.Exit(0)

@@ -26,6 +26,7 @@ extern void llamaLog(int level, char* text, void* user_data);
 import "C"
 
 import (
+	"bytes"
 	"context"
 	_ "embed"
 	"errors"
@@ -82,8 +83,8 @@ func EnumerateGPUs() []Devices {
 			C.ggml_backend_dev_get_props(device, &props)
 			ids = append(ids, Devices{
 				DeviceID: ml.DeviceID{
-					ID:      C.GoString(props.id),
-					Library: C.GoString(props.library),
+					ID:      C.GoString(props.device_id),
+					Library: C.GoString(C.ggml_backend_reg_name(C.ggml_backend_dev_backend_reg(device))),
 				},
 				LlamaID: uint64(i),
 			})
@@ -380,10 +381,9 @@ func (m *Model) ApplyLoraFromFile(context *Context, loraPath string, scale float
 		return errors.New("unable to load lora")
 	}
 
-	err := -1
-	if loraAdapter != nil {
-		err = int(C.llama_set_adapter_lora(context.c, loraAdapter, C.float(scale)))
-	}
+	adapters := []*C.struct_llama_adapter_lora{loraAdapter}
+	scales := []C.float{C.float(scale)}
+	err := int(C.llama_set_adapters_lora(context.c, &adapters[0], C.size_t(len(adapters)), &scales[0]))
 	if err != 0 {
 		return errors.New("error applying lora from file")
 	}
@@ -729,7 +729,22 @@ func SchemaToGrammar(schema []byte) []byte {
 		// preserve nil
 		return nil
 	}
-	return buf[:n]
+	grammar := buf[:n]
+	lines := bytes.Split(grammar, []byte("\n"))
+	rootIdx := -1
+	for i, line := range lines {
+		if bytes.HasPrefix(bytes.TrimSpace(line), []byte("root ::= ")) {
+			rootIdx = i
+			break
+		}
+	}
+	if rootIdx > 0 {
+		ordered := make([][]byte, 0, len(lines))
+		ordered = append(ordered, lines[rootIdx])
+		ordered = append(ordered, append(lines[:rootIdx], lines[rootIdx+1:]...)...)
+		grammar = bytes.Join(ordered, []byte("\n"))
+	}
+	return grammar
 }
 
 type TokenData struct {

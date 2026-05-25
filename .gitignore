@@ -18,3 +18,4 @@ llama/vendor
 integration/testdata/models/
 /build
 /build_sm89
+/build_clang_lto

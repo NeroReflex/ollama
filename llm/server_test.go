@@ -33,6 +33,21 @@ func TestLLMServerFitGPU(t *testing.T) {
 			requireFull: true, // Should not try to evict even though we can't load any layers
 		},
 		{
+			name:        "requireFull allows partial offload",
+			gpus:        []ml.DeviceInfo{{DeviceID: ml.DeviceID{ID: "gpu0"}, FreeMemory: uint64(256*format.MebiByte + minMemory)}},
+			layers:      []int{100 * format.MebiByte, 100 * format.MebiByte, 100 * format.MebiByte, 100 * format.MebiByte},
+			numGPU:      -1,
+			requireFull: true,
+			expected:    ml.GPULayersList{{DeviceID: ml.DeviceID{ID: "gpu0"}, Layers: []int{1, 2}}},
+		},
+		{
+			name:        "gpu present but no layer fits",
+			gpus:        []ml.DeviceInfo{{DeviceID: ml.DeviceID{ID: "gpu0"}, FreeMemory: 64 * format.MebiByte}},
+			layers:      []int{100 * format.MebiByte, 100 * format.MebiByte},
+			numGPU:      -1,
+			expectedErr: ErrLoadRequiredFull,
+		},
+		{
 			name:     "Full single GPU",
 			gpus:     []ml.DeviceInfo{{DeviceID: ml.DeviceID{ID: "gpu0"}, FreeMemory: uint64(256*format.MebiByte + minMemory)}},
 			layers:   []int{50 * format.MebiByte, 50 * format.MebiByte, 50 * format.MebiByte},

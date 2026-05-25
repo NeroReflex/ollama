@@ -225,8 +225,8 @@ func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath st
 	kvct := strings.ToLower(strings.TrimSpace(envconfig.KvCacheType()))
 	kvctAuto := false
 	if kvct == "" {
-		// Prefer TurboQuant by default (K=turbo4, V=turbo3) when not explicitly overridden.
-		kvct = "turbo4_0/turbo3_0"
+		// Prefer q8_0/turbo3_0 by default when not explicitly overridden.
+		kvct = "q8_0/turbo3_0"
 		kvctAuto = true
 	}
 
@@ -1071,8 +1071,13 @@ nextLayer:
 	}
 
 	if requireFull {
-		if len(systemGPUs) > 0 && gpuLayers.Sum() < len(layers) && (s.options.NumGPU < 0 || gpuLayers.Sum() < s.options.NumGPU) {
+		if len(systemGPUs) > 0 && gpuLayers.Sum() == 0 {
 			slog.Info("model requires more gpu memory than is currently available, evicting a model to make space", "loaded layers", gpuLayers.Sum())
+			return ErrLoadRequiredFull
+		}
+
+		if s.options.NumGPU >= 0 && gpuLayers.Sum() < s.options.NumGPU {
+			slog.Info("model could not satisfy the requested gpu layer count", "requested", s.options.NumGPU, "loaded layers", gpuLayers.Sum())
 			return ErrLoadRequiredFull
 		}
 
@@ -1080,6 +1085,11 @@ nextLayer:
 			slog.Info("model requires more system memory than is currently available, evicting a model to make space", "required", cpuSize, "free", systemInfo.FreeMemory)
 			return fmt.Errorf("model requires more system memory than is currently available %w", ErrLoadRequiredFull)
 		}
+	}
+
+	if len(systemGPUs) > 0 && gpuLayers.Sum() == 0 {
+		slog.Info("model would load on cpu only despite available gpu devices", "loaded layers", gpuLayers.Sum())
+		return ErrLoadRequiredFull
 	}
 
 	// On linux and windows, over-allocating CPU memory will almost always result in an error

@@ -19,3 +19,7 @@ integration/testdata/models/
 /build
 /build_sm89
 /build_clang_lto
+/build_optimized
+/build_debug
+/build_debug_clang
+/build_debug_clang_lto

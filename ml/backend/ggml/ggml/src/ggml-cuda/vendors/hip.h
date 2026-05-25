@@ -5,12 +5,15 @@
 #include <hipblas/hipblas.h>
 #include <hip/hip_fp16.h>
 #include <hip/hip_bf16.h>
-// for rocblas_initialize()
-#include "rocblas/rocblas.h"
 
 #if defined(GGML_HIP_ROCWMMA_FATTN)
 #include <rocwmma/rocwmma-version.hpp>
 #endif // defined(GGML_HIP_ROCWMMA_FATTN)
+
+#ifdef GGML_USE_NCCL
+#include <rccl/rccl.h>
+#endif // GGML_USE_NCCL
+
 
 #define CUBLAS_GEMM_DEFAULT HIPBLAS_GEMM_DEFAULT
 #define CUBLAS_GEMM_DEFAULT_TENSOR_OP HIPBLAS_GEMM_DEFAULT
@@ -30,32 +33,53 @@
 #define CU_MEM_LOCATION_TYPE_DEVICE hipMemLocationTypeDevice
 #define CU_MEM_ACCESS_FLAGS_PROT_READWRITE hipMemAccessFlagsProtReadWrite
 #define CU_CHECK(fn) {hipError_t err = fn; if(err != hipSuccess) { GGML_ABORT("HipVMM Failure: %s\n", hipGetErrorString(err)); }}
-#define __shfl_sync(mask, var, laneMask, width) __shfl(var, laneMask, width)
-#define __shfl_up_sync(mask, var, laneMask, width) __shfl_up(var, laneMask, width)
-#define __shfl_xor_sync(mask, var, laneMask, width) __shfl_xor(var, laneMask, width)
+// __shfl_sync: support both 3-arg (mask, var, srcLane) and 4-arg (mask, var, srcLane, width) calls
+// HIP ignores the mask but requires it to be 64-bit, so we cast explicitly.
+#define __SHFL_SYNC_3(mask, var, srcLane)        __shfl(var, srcLane, warpSize)
+#define __SHFL_SYNC_4(mask, var, srcLane, width) __shfl(var, srcLane, width)
+#define __SHFL_GET_MACRO(_1, _2, _3, _4, NAME, ...) NAME
+#define __shfl_sync(...) __SHFL_GET_MACRO(__VA_ARGS__, __SHFL_SYNC_4, __SHFL_SYNC_3)(__VA_ARGS__)
+// __shfl_up_sync: support 3-arg and 4-arg calls (HIP ignores mask)
+#define __SHFL_UP_SYNC_3(mask, var, delta)        __shfl_up(var, delta, warpSize)
+#define __SHFL_UP_SYNC_4(mask, var, delta, width) __shfl_up(var, delta, width)
+#define __SHFL_UP_GET(_1, _2, _3, _4, NAME, ...) NAME
+#define __shfl_up_sync(...) __SHFL_UP_GET(__VA_ARGS__, __SHFL_UP_SYNC_4, __SHFL_UP_SYNC_3)(__VA_ARGS__)
+// __shfl_xor_sync: support 3-arg and 4-arg calls (HIP ignores mask)
+#define __SHFL_XOR_SYNC_3(mask, var, laneMask)        __shfl_xor(var, laneMask, warpSize)
+#define __SHFL_XOR_SYNC_4(mask, var, laneMask, width) __shfl_xor(var, laneMask, width)
+#define __SHFL_XOR_GET(_1, _2, _3, _4, NAME, ...) NAME
+#define __shfl_xor_sync(...) __SHFL_XOR_GET(__VA_ARGS__, __SHFL_XOR_SYNC_4, __SHFL_XOR_SYNC_3)(__VA_ARGS__)
+// __shfl_down_sync: support 3-arg and 4-arg calls (HIP ignores mask)
+#define __SHFL_DOWN_SYNC_3(mask, var, delta)        __shfl_down(var, delta, warpSize)
+#define __SHFL_DOWN_SYNC_4(mask, var, delta, width) __shfl_down(var, delta, width)
+#define __SHFL_DOWN_GET(_1, _2, _3, _4, NAME, ...) NAME
+#define __shfl_down_sync(...) __SHFL_DOWN_GET(__VA_ARGS__, __SHFL_DOWN_SYNC_4, __SHFL_DOWN_SYNC_3)(__VA_ARGS__)
 #define __all_sync(mask, var) __all(var)
 #define __any_sync(mask, var) __any(var)
+#define __ballot_sync(mask, var) ((uint32_t)__ballot(var))
 #define cublasStrsmBatched hipblasStrsmBatched
 #define cublasCreate hipblasCreate
 #define cublasDestroy hipblasDestroy
 #define cublasGemmEx hipblasGemmEx
-#define cublasGemmAlgo_t hipblasGemmAlgo_t
 #define cublasGemmBatchedEx hipblasGemmBatchedEx
 #define cublasGemmStridedBatchedEx hipblasGemmStridedBatchedEx
 #define cublasHandle_t hipblasHandle_t
 #define cublasSetMathMode(handle, mode) CUBLAS_STATUS_SUCCESS
 #define cublasSetStream hipblasSetStream
 #define cublasSgemm hipblasSgemm
+#define cublasSgemmStridedBatched hipblasSgemmStridedBatched
 #define cublasStatus_t hipblasStatus_t
 #define cublasOperation_t hipblasOperation_t
+#define cudaDevAttrCooperativeLaunch hipDeviceAttributeCooperativeLaunch
 #define cudaDeviceCanAccessPeer hipDeviceCanAccessPeer
 #define cudaDeviceDisablePeerAccess hipDeviceDisablePeerAccess
 #define cudaDeviceEnablePeerAccess hipDeviceEnablePeerAccess
+#define cudaDeviceGetAttribute hipDeviceGetAttribute
+#define cudaDeviceGetPCIBusId hipDeviceGetPCIBusId
 #define cudaDeviceProp hipDeviceProp_t
-#define cudaDeviceReset hipDeviceReset
 #define cudaDeviceSynchronize hipDeviceSynchronize
-#define cudaDriverGetVersion hipDriverGetVersion
 #define cudaError_t hipError_t
+#define cudaErrorMemoryAllocation hipErrorOutOfMemory
 #define cudaErrorPeerAccessAlreadyEnabled hipErrorPeerAccessAlreadyEnabled
 #define cudaErrorPeerAccessNotEnabled hipErrorPeerAccessNotEnabled
 #define cudaEventCreateWithFlags hipEventCreateWithFlags
@@ -75,6 +99,7 @@
 #define cudaHostRegisterPortable hipHostRegisterPortable
 #define cudaHostRegisterReadOnly hipHostRegisterReadOnly
 #define cudaHostUnregister hipHostUnregister
+#define cudaLaunchCooperativeKernel hipLaunchCooperativeKernel
 #define cudaLaunchHostFunc hipLaunchHostFunc
 #define cudaMalloc hipMalloc
 #define cudaMallocHost(ptr, size) hipHostMalloc(ptr, size, hipHostMallocDefault)
@@ -115,6 +140,10 @@
 #define cudaStreamPerThread hipStreamPerThread
 #define cudaStreamSynchronize hipStreamSynchronize
 #define cudaStreamWaitEvent hipStreamWaitEvent
+#define cudaMemcpyToSymbol hipMemcpyToSymbol
+#define cudaMemcpyFromSymbol hipMemcpyFromSymbol
+#define cudaMemcpyHostToDevice hipMemcpyHostToDevice
+#define cudaMemcpyDeviceToHost hipMemcpyDeviceToHost
 #define cudaGraphExec_t hipGraphExec_t
 #define cudaGraphNode_t hipGraphNode_t
 #define cudaKernelNodeParams hipKernelNodeParams
@@ -127,6 +156,9 @@
 #define cudaGraphNodeTypeKernel hipGraphNodeTypeKernel
 #define cudaGraphInstantiate hipGraphInstantiate
 #define cudaStreamEndCapture hipStreamEndCapture
+#define cudaStreamCaptureStatus hipStreamCaptureStatus
+#define cudaStreamIsCapturing hipStreamIsCapturing
+#define cudaStreamCaptureStatusNone hipStreamCaptureStatusNone
 #define cudaGraphDestroy hipGraphDestroy
 #define cudaGraphKernelNodeSetParams hipGraphKernelNodeSetParams
 #define cudaErrorInvalidDeviceFunction hipErrorInvalidDeviceFunction
@@ -140,6 +172,8 @@
 #define cudaStream_t hipStream_t
 #define cudaSuccess hipSuccess
 #define cudaOccupancyMaxActiveBlocksPerMultiprocessor hipOccupancyMaxActiveBlocksPerMultiprocessor
+#define cudaFuncSetAttribute hipFuncSetAttribute
+#define cudaFuncAttributeMaxDynamicSharedMemorySize hipFuncAttributeMaxDynamicSharedMemorySize
 #define __trap() do { abort(); __builtin_unreachable(); } while(0)
 #define CUBLAS_STATUS_SUCCESS HIPBLAS_STATUS_SUCCESS
 #define CUBLAS_STATUS_NOT_INITIALIZED HIPBLAS_STATUS_NOT_INITIALIZED
@@ -183,6 +217,10 @@
 #define GCN
 #endif // defined(GCN5) || defined(GCN4)
 
+#if defined(__gfx950__)
+#define CDNA4
+#endif // defined(__gfx950__)
+
 #if defined(__gfx942__)
 #define CDNA3
 #endif // defined(__gfx942__)
@@ -195,9 +233,9 @@
 #define CDNA1
 #endif // defined(__gfx908__)
 
-#if defined(CDNA3) || defined(CDNA2) || defined(CDNA1)
+#if defined(CDNA4) || defined(CDNA3) || defined(CDNA2) || defined(CDNA1)
 #define CDNA // For the entire family
-#endif // defined(CDNA3) || defined(CDNA2) || defined(CDNA1)
+#endif // defined(CDNA4) || defined(CDNA3) || defined(CDNA2) || defined(CDNA1)
 
 #if defined(__GFX12__)
 #define RDNA4
@@ -206,6 +244,14 @@
 #if defined(__GFX11__)
 #define RDNA3
 #endif // defined(__GFX11__)
+
+#if defined(__gfx1150__) || defined(__gfx1151__)
+#define RDNA3_5
+#endif // defined(__gfx1150__) || defined(__gfx1151__)
+
+#if defined(RDNA3) && !defined(RDNA3_5)
+#define RDNA3_0
+#endif // defined(RDNA3) && !defined(RDNA3_5)
 
 #if defined(__gfx1030__) || defined(__gfx1031__) || defined(__gfx1032__) || defined(__gfx1033__) || \
     defined(__gfx1034__) || defined(__gfx1035__) || defined(__gfx1036__) || defined(__gfx1037__)
@@ -226,6 +272,12 @@
 
 typedef __hip_bfloat16 nv_bfloat16;
 typedef __hip_bfloat162 nv_bfloat162;
+
+#if HIP_VERSION >= 60200000
+#include <hip/hip_fp8.h>
+typedef __hip_fp8_e4m3 __nv_fp8_e4m3;
+#define FP8_AVAILABLE
+#endif // HIP_VERSION >= 60200000
 
 typedef int8_t int8x4_t __attribute__((ext_vector_type(4)));
 typedef uint8_t uint8x4_t __attribute__((ext_vector_type(4)));

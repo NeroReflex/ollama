@@ -848,13 +848,23 @@ func (f GGML) GraphSize(context, batch uint64, numParallel int, kvCacheType stri
 	return
 }
 
-// SupportsKVCacheType checks if the requested cache type is supported
+// SupportsKVCacheType checks if the requested cache type is supported.
+// It accepts either a single type (e.g. "q8_0", "turbo3_0") or a pair
+// "<k>/<v>" to set K and V cache types independently.
 func (f GGML) SupportsKVCacheType(cacheType string) bool {
-	if cacheType == "" || cacheType == "f16" {
+	cacheType = strings.ToLower(strings.TrimSpace(cacheType))
+	if cacheType == "" {
 		return true
 	}
 
-	return slices.Contains([]string{"q8_0", "q4_0"}, cacheType)
+	supported := []string{"f16", "f32", "bf16", "q8_0", "q4_0", "turbo2_0", "turbo3_0", "turbo4_0"}
+
+	if strings.Contains(cacheType, "/") {
+		parts := strings.SplitN(cacheType, "/", 2)
+		return len(parts) == 2 && slices.Contains(supported, parts[0]) && slices.Contains(supported, parts[1])
+	}
+
+	return slices.Contains(supported, cacheType)
 }
 
 // KVCacheTypeIsQuantized checks if the requested cache type is a quantized type

@@ -6,17 +6,18 @@ template<int qk, int qr, dequantize_kernel_t dequantize_kernel, typename dst_t>
 static __global__ void k_get_rows(
         const void * __restrict__ src0, const int32_t * __restrict__ src1, dst_t * __restrict__ dst,
         const int64_t ne00, /*const int64_t ne01, const int64_t ne02, const int64_t ne03,*/
-        /*const int64_t ne10,*/ const int64_t ne11, const int64_t ne12, /*const int64_t ne13,*/
+        /*const int64_t ne10,*/ const int64_t ne11, const uint3 ne12_fdv, /*const int64_t ne13,*/
         /*const size_t s0,*/ const size_t s1, const size_t s2, const size_t s3,
         /*const size_t nb00,*/ const size_t nb01, const size_t nb02, const size_t nb03,
         const size_t s10, const size_t s11, const size_t s12/*, const size_t s13*/) {
 
-    for (int64_t z = blockIdx.z; z < ne11*ne12; z += gridDim.z) {
+    for (int64_t z = blockIdx.z; z < ne11*(int64_t)ne12_fdv.z; z += gridDim.z) {
         for (int64_t i00 = 2*(blockIdx.y*blockDim.x + threadIdx.x); i00 < ne00; i00 += gridDim.y*blockDim.x) {
             // The x and y dimensions of the grid are swapped because the maximum allowed grid size for x is higher.
             const int i10 =  blockIdx.x;
-            const int i11 =  z / ne12; // TODO fastdiv
-            const int i12 =  z % ne12;
+            const uint2 dm  = fast_div_modulo((uint32_t)z, ne12_fdv);
+            const int i11 =  dm.x;
+            const int i12 =  dm.y;
 
             const int i01 = src1[i10*s10 + i11*s11 + i12*s12];
 
@@ -42,17 +43,18 @@ template<typename src0_t, typename dst_t>
 static __global__ void k_get_rows_float(
         const src0_t * __restrict__ src0, const int32_t * __restrict__ src1, dst_t * __restrict__ dst,
         const int64_t ne00, /*const int64_t ne01, const int64_t ne02, const int64_t ne03,*/
-        /*const int64_t ne10,*/ const int64_t ne11, const int64_t ne12, /*const int64_t ne13,*/
+        /*const int64_t ne10,*/ const int64_t ne11, const uint3 ne12_fdv, /*const int64_t ne13,*/
         /*const size_t s0,*/ const size_t s1, const size_t s2, const size_t s3,
         /*const size_t nb00,*/ const size_t nb01, const size_t nb02, const size_t nb03,
         const size_t s10, const size_t s11, const size_t s12/*, const size_t s13*/) {
 
-    for (int64_t z = blockIdx.z; z < ne11*ne12; z += gridDim.z) {
+    for (int64_t z = blockIdx.z; z < ne11*(int64_t)ne12_fdv.z; z += gridDim.z) {
         for (int64_t i00 = blockIdx.y*blockDim.x + threadIdx.x; i00 < ne00; i00 += gridDim.y*blockDim.x) {
             // The x and y dimensions of the grid are swapped because the maximum allowed grid size for x is higher.
             const int i10 = blockIdx.x;
-            const int i11 = z / ne12; // TODO fastdiv
-            const int i12 = z % ne12;
+            const uint2 dm = fast_div_modulo((uint32_t)z, ne12_fdv);
+            const int i11 = dm.x;
+            const int i12 = dm.y;
 
             if (i00 >= ne00) {
                 return;
@@ -115,10 +117,14 @@ static void get_rows_cuda_q(
 
     GGML_ASSERT(ne00 % 2 == 0);
 
+    GGML_ASSERT(ne12 > 0);
+    GGML_ASSERT(ne11 <= std::numeric_limits<uint32_t>::max() / ne12);
+    const uint3 ne12_fdv = init_fastdiv_values(ne12);
+
     k_get_rows<qk, qr, dq><<<block_nums, block_dims, 0, stream>>>(
         src0_d, src1_d, dst_d,
         ne00, /*ne01, ne02, ne03,*/
-        /*ne10,*/ ne11, ne12, /*ne13,*/
+        /*ne10,*/ ne11, ne12_fdv, /*ne13,*/
         /* s0,*/ s1, s2, s3,
         /* nb00,*/ nb01, nb02, nb03,
         s10, s11, s12/*, s13*/);
@@ -146,88 +152,17 @@ static void get_rows_cuda_float(
     const size_t s12 = nb12 / sizeof(int32_t);
     // const size_t s13 = nb13 / sizeof(int32_t);
 
+    GGML_ASSERT(ne12 > 0);
+    GGML_ASSERT(ne11 <= std::numeric_limits<uint32_t>::max() / ne12);
+    const uint3 ne12_fdv = init_fastdiv_values(ne12);
+
     k_get_rows_float<<<block_nums, block_dims, 0, stream>>>(
         src0_d, src1_d, dst_d,
         ne00, /*ne01, ne02, ne03,*/
-        /*ne10,*/ ne11, ne12, /*ne13,*/
+        /*ne10,*/ ne11, ne12_fdv, /*ne13,*/
         /* s0,*/ s1, s2, s3,
         /* nb00,*/ nb01, nb02, nb03,
         s10, s11, s12/*, s13*/);
-}
-
-// Specialized GET_ROWS kernel for Q6_K — the k_get_rows template doesn't work for K-quants
-// because they lack the simple dequantize_kernel_t (float2) interface.
-// Based on dequantize_block_q6_K from convert.cu with row-selection logic added.
-template<typename dst_t>
-static __global__ void k_get_rows_q6_K(
-        const void * __restrict__ src0, const int32_t * __restrict__ src1, dst_t * __restrict__ dst,
-        const int64_t ne00,
-        const int64_t ne11, const int64_t ne12,
-        const size_t s1, const size_t s2, const size_t s3,
-        const size_t nb01, const size_t nb02, const size_t nb03,
-        const size_t s10, const size_t s11, const size_t s12) {
-
-    const int64_t i10 = blockIdx.x;  // row index into src1
-    const int64_t z   = blockIdx.z;
-    const int64_t i11 = z / ne12;
-    const int64_t i12 = z % ne12;
-
-    const int i01 = src1[i10*s10 + i11*s11 + i12*s12];
-
-    dst_t * dst_row = dst + i10*s1 + i11*s2 + i12*s3;
-    const char * src0_row = (const char *)src0 + i01*nb01 + i11*nb02 + i12*nb03;
-
-    const int64_t nb = ne00 / QK_K;  // number of Q6_K blocks per row
-
-    // blockIdx.y iterates over Q6_K blocks within the row
-    for (int64_t iblk = blockIdx.y; iblk < nb; iblk += gridDim.y) {
-        const block_q6_K * x = (const block_q6_K *)src0_row + iblk;
-
-        // Same dequantization as dequantize_block_q6_K (assumes 64 threads)
-        const int64_t tid = threadIdx.x;
-        const int64_t ip  = tid / 32;   // 0 or 1
-        const int64_t il  = tid - 32*ip; // 0..31
-        const int64_t is  = 8*ip + il/16;
-
-        const int64_t y_offset = iblk * QK_K + 128*ip + il;
-
-        const float d = x->d;
-        const uint8_t * ql = x->ql + 64*ip + il;
-        const uint8_t   qh = x->qh[32*ip + il];
-        const int8_t  * sc = x->scales + is;
-
-        if (y_offset + 0  < ne00) dst_row[y_offset +  0] = ggml_cuda_cast<dst_t>(d * sc[0] * ((int8_t)((ql[ 0] & 0xF) | (((qh >> 0) & 3) << 4)) - 32));
-        if (y_offset + 32 < ne00) dst_row[y_offset + 32] = ggml_cuda_cast<dst_t>(d * sc[2] * ((int8_t)((ql[32] & 0xF) | (((qh >> 2) & 3) << 4)) - 32));
-        if (y_offset + 64 < ne00) dst_row[y_offset + 64] = ggml_cuda_cast<dst_t>(d * sc[4] * ((int8_t)((ql[ 0]  >> 4) | (((qh >> 4) & 3) << 4)) - 32));
-        if (y_offset + 96 < ne00) dst_row[y_offset + 96] = ggml_cuda_cast<dst_t>(d * sc[6] * ((int8_t)((ql[32]  >> 4) | (((qh >> 6) & 3) << 4)) - 32));
-    }
-}
-
-template<typename dst_t>
-static void get_rows_cuda_q6_K(
-        const void * src0_d, const int32_t * src1_d, dst_t * dst_d,
-        const int64_t ne00, const size_t nb01, const size_t nb02, const size_t nb03,
-        const int64_t ne10, const int64_t ne11, const int64_t ne12, const size_t nb10, const size_t nb11, const size_t nb12,
-        const size_t nb1, const size_t nb2, const size_t nb3,
-        cudaStream_t stream) {
-    const int64_t nb_blocks = ne00 / QK_K;
-    const dim3 block_dims(64, 1, 1);
-    const dim3 block_nums(ne10, MIN(nb_blocks, (int64_t)UINT16_MAX), MIN(ne11*ne12, (int64_t)UINT16_MAX));
-
-    const size_t s1 = nb1 / sizeof(dst_t);
-    const size_t s2 = nb2 / sizeof(dst_t);
-    const size_t s3 = nb3 / sizeof(dst_t);
-
-    const size_t s10 = nb10 / sizeof(int32_t);
-    const size_t s11 = nb11 / sizeof(int32_t);
-    const size_t s12 = nb12 / sizeof(int32_t);
-
-    k_get_rows_q6_K<<<block_nums, block_dims, 0, stream>>>(
-        src0_d, src1_d, dst_d,
-        ne00, ne11, ne12,
-        s1, s2, s3,
-        nb01, nb02, nb03,
-        s10, s11, s12);
 }
 
 template <typename dst_t>
@@ -254,6 +189,10 @@ static void ggml_cuda_get_rows_switch_src0_type(
             get_rows_cuda_float((const nv_bfloat16 *) src0_d, src1_d, dst_d,
                 ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
             break;
+        case GGML_TYPE_Q1_0:
+            get_rows_cuda_q<QK1_0, QR1_0, dequantize_q1_0>(src0_d, src1_d, dst_d,
+                ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
+            break;
         case GGML_TYPE_Q4_0:
             get_rows_cuda_q<QK4_0, QR4_0, dequantize_q4_0>(src0_d, src1_d, dst_d,
                 ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
@@ -274,11 +213,8 @@ static void ggml_cuda_get_rows_switch_src0_type(
             get_rows_cuda_q<QK8_0, QR8_0, dequantize_q8_0>(src0_d, src1_d, dst_d,
                 ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
             break;
-        case GGML_TYPE_Q6_K:
-            get_rows_cuda_q6_K(src0_d, src1_d, dst_d,
-                ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
-            break;
         default:
+            // TODO: k-quants
             GGML_ABORT("%s: unsupported src0 type: %s\n", __func__, ggml_type_name(src0_type));
             break;
     }

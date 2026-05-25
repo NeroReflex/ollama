@@ -2,6 +2,7 @@
 #include "ggml-backend-impl.h"
 #include "ggml.h"
 #include "ggml-impl.h"
+
 #include <assert.h>
 #include <limits.h>
 #include <stdarg.h>
@@ -16,11 +17,6 @@
 
 //#define AT_PRINTF(...) GGML_LOG_DEBUG(__VA_ARGS__)
 #define AT_PRINTF(...)
-
-
-static bool ggml_is_view(const struct ggml_tensor * t) {
-    return t->view_src != NULL;
-}
 
 // ops that return true for this function must not use restrict pointers for their backend implementations
 bool ggml_op_can_inplace(enum ggml_op op) {
@@ -485,7 +481,6 @@ struct node_alloc {
 struct ggml_gallocr {
     ggml_backend_buffer_type_t * bufts; // [n_buffers]
     struct vbuffer ** buffers; // [n_buffers]
-    size_t *buffer_sizes; // [n_buffers]
     struct ggml_dyn_tallocr ** buf_tallocs; // [n_buffers]
     int n_buffers;
 
@@ -508,9 +503,6 @@ ggml_gallocr_t ggml_gallocr_new_n(ggml_backend_buffer_type_t * bufts, int n_bufs
 
     galloc->buffers = calloc(n_bufs, sizeof(struct vbuffer *));
     GGML_ASSERT(galloc->buffers != NULL);
-
-    galloc->buffer_sizes = calloc(n_bufs, sizeof(size_t));
-    GGML_ASSERT(galloc->buffer_sizes != NULL);
 
     galloc->buf_tallocs = calloc(n_bufs, sizeof(struct ggml_dyn_tallocr *));
     GGML_ASSERT(galloc->buf_tallocs != NULL);
@@ -579,7 +571,6 @@ void ggml_gallocr_free(ggml_gallocr_t galloc) {
     ggml_hash_set_free(&galloc->hash_set);
     free(galloc->hash_values);
     free(galloc->bufts);
-    free(galloc->buffer_sizes);
     free(galloc->buffers);
     free(galloc->buf_tallocs);
     free(galloc->node_allocs);
@@ -632,7 +623,7 @@ static void ggml_gallocr_allocate_node(ggml_gallocr_t galloc, struct ggml_tensor
     GGML_ASSERT(buffer_id >= 0);
     struct hash_node * hn = ggml_gallocr_hash_get(galloc, node);
 
-    if (!ggml_gallocr_is_allocated(galloc, node) && !ggml_is_view(node)) {
+    if (!ggml_gallocr_is_allocated(galloc, node) && !ggml_impl_is_view(node)) {
         hn->allocated = true;
         assert(hn->addr.offset == 0);
 
@@ -663,7 +654,7 @@ static void ggml_gallocr_allocate_node(ggml_gallocr_t galloc, struct ggml_tensor
 
                 struct hash_node * p_hn = ggml_gallocr_hash_get(galloc, parent);
                 if (p_hn->n_children == 1 && p_hn->n_views == 0) {
-                    if (ggml_is_view(parent)) {
+                    if (ggml_impl_is_view(parent)) {
                         struct ggml_tensor * view_src = parent->view_src;
                         struct hash_node * view_src_hn = ggml_gallocr_hash_get(galloc, view_src);
                         if (view_src_hn->n_views == 1 && view_src_hn->n_children == 0 && view_src->data == parent->data) {
@@ -744,7 +735,7 @@ static void ggml_gallocr_alloc_graph_impl(ggml_gallocr_t galloc, struct ggml_cgr
         // GGML_OP_NONE does not appear normally in the graph nodes, but is used by ggml-backend to add dependencies to
         // control when some tensors are allocated and freed. in this case, the dependencies are in `src`, but the node
         // itself is never used and should not be considered a dependency
-        if (ggml_is_view(node) && node->op != GGML_OP_NONE) {
+        if (ggml_impl_is_view(node) && node->op != GGML_OP_NONE) {
             struct ggml_tensor * view_src = node->view_src;
             ggml_gallocr_hash_get(galloc, view_src)->n_views += 1;
         }
@@ -811,7 +802,7 @@ static void ggml_gallocr_alloc_graph_impl(ggml_gallocr_t galloc, struct ggml_cgr
                 parent->name, p_hn->n_children, p_hn->n_views, p_hn->allocated);
 
             if (p_hn->n_children == 0 && p_hn->n_views == 0) {
-                if (ggml_is_view(parent)) {
+                if (ggml_impl_is_view(parent)) {
                     struct ggml_tensor * view_src = parent->view_src;
                     struct hash_node * view_src_hn = ggml_gallocr_hash_get(galloc, view_src);
                     view_src_hn->n_views -= 1;
@@ -909,8 +900,6 @@ static bool ggml_gallocr_reserve_n_impl(
         }
     }
 
-    bool success = true;
-
     // reallocate buffers if needed
     for (int i = 0; i < galloc->n_buffers; i++) {
         // if the buffer type is used multiple times, we reuse the same buffer
@@ -947,20 +936,15 @@ static bool ggml_gallocr_reserve_n_impl(
                 galloc->buffers[i] = NULL;
             } else {
                 galloc->buffers[i] = ggml_vbuffer_alloc(galloc->bufts[i], galloc->buf_tallocs[i], GGML_BACKEND_BUFFER_USAGE_COMPUTE);
-                if (galloc->buffers[i]) {
-                    galloc->buffer_sizes[i] = ggml_vbuffer_size(galloc->buffers[i]);
-                } else {
+                if (galloc->buffers[i] == NULL) {
                     GGML_LOG_ERROR("%s: failed to allocate %s buffer of size %zu\n", __func__, ggml_backend_buft_name(galloc->bufts[i]), new_size);
-                    galloc->buffer_sizes[i] = new_size;
-                    success = false;
+                    return false;
                 }
             }
-        } else {
-            galloc->buffer_sizes[i] = ggml_vbuffer_size(galloc->buffers[i]);
         }
     }
 
-    return success;
+    return true;
 }
 
 void ggml_gallocr_reserve_n_size(
@@ -1130,22 +1114,6 @@ size_t ggml_gallocr_get_buffer_size(ggml_gallocr_t galloc, int buffer_id) {
     return ggml_vbuffer_size(galloc->buffers[buffer_id]);
 }
 
-size_t ggml_gallocr_get_attempted_buffer_size(ggml_gallocr_t galloc, int buffer_id) {
-    GGML_ASSERT(buffer_id >= 0 && buffer_id < galloc->n_buffers);
-
-    for (int i = 0; i < buffer_id; i++) {
-        if (galloc->buf_tallocs[i] == galloc->buf_tallocs[buffer_id]) {
-            // This buffer is the same as a previous one due to the same buffer type being used multiple times
-            // (See above.) However, we need a different check because multiple buffers might be NULL in our
-            // case and we still want to know the attempted size.
-
-            return 0;
-        }
-    }
-
-    return galloc->buffer_sizes[buffer_id];
-}
-
 // utils
 
 static void free_buffers(ggml_backend_buffer_t ** buffers, const size_t * n_buffers) {
@@ -1269,6 +1237,9 @@ size_t ggml_backend_alloc_ctx_tensors_from_buft_size(struct ggml_context * ctx, 
 
 ggml_backend_buffer_t ggml_backend_alloc_ctx_tensors_from_buft(struct ggml_context * ctx, ggml_backend_buffer_type_t buft) {
     size_t nbytes_total = 0;
+    if (ggml_backend_buft_is_meta(buft)) {
+        return ggml_backend_meta_alloc_ctx_tensors_from_buft(ctx, buft);
+    }
     return ggml_backend_alloc_ctx_tensors_from_buft_impl(ctx, buft, &nbytes_total, /*no_alloc =*/ false);
 }
 

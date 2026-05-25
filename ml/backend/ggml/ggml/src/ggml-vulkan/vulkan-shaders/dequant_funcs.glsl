@@ -87,6 +87,23 @@ vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
 }
 #endif
 
+#if defined(DATA_A_Q1_0)
+vec2 dequantize(uint ib, uint iqs, uint a_offset) {
+    const uint bits = uint(data_a[a_offset + ib].qs[iqs / 8u]) >> (iqs % 8u);
+    return vec2(
+        (bits & 1u) != 0u ? 1.0f : -1.0f,
+        (bits & 2u) != 0u ? 1.0f : -1.0f);
+}
+vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
+    const uint bits = uint(data_a[a_offset + ib].qs[iqs / 8u]) >> (iqs % 8u);
+    return vec4(
+        (bits & 1u) != 0u ? 1.0f : -1.0f,
+        (bits & 2u) != 0u ? 1.0f : -1.0f,
+        (bits & 4u) != 0u ? 1.0f : -1.0f,
+        (bits & 8u) != 0u ? 1.0f : -1.0f);
+}
+#endif
+
 #if defined(DATA_A_IQ1_S)
 vec2 dequantize(uint ib, uint iqs, uint a_offset) {
     const uint ib32 = iqs / 32;
@@ -401,13 +418,7 @@ vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
     const uint sl = (data_a[a_offset + ib].scales_l[ib32/2] >> (4 * (ib32 & 1))) & 0xF;
     const uint sh = (data_a[a_offset + ib].scales_h >> (2 * ib32)) & 3;
     const uint qshift = (iqs & 16) >> 2;
-    u8vec4 qs = u8vec4(
-        data_a[a_offset + ib].qs[iq + 0],
-        data_a[a_offset + ib].qs[iq + 1],
-        data_a[a_offset + ib].qs[iq + 2],
-        data_a[a_offset + ib].qs[iq + 3]
-    );
-    qs = (qs >> qshift) & uint8_t(0xF);
+    const u8vec4 qs = unpack8((data_a_packed32[a_offset + ib].qs[iq/4] >> qshift) & 0x0F0F0F0F);
 
     const float dl = float(int(sl | (sh << 4)) - 32);
     return dl * vec4(
@@ -439,6 +450,25 @@ vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
 }
 #endif
 
+#if defined(DATA_A_NVFP4)
+vec2 dequantize(uint ib, uint iqs, uint a_offset) {
+    const uint sub = iqs >> 4;
+    const float d = ue4m3_to_fp32(data_a[a_offset + ib].d[sub]);
+    const uint j = iqs & 7;
+    const uint shift = (iqs & 8) >> 1; // 0 or 4
+    const uint vui0 = uint(data_a[a_offset + ib].qs[sub * 8u + j]);
+    const uint vui1 = uint(data_a[a_offset + ib].qs[sub * 8u + j + 1]);
+    const uint qs0 = (vui0 >> shift) & 0xF;
+    const uint qs1 = (vui1 >> shift) & 0xF;
+    return vec2(float(kvalues_mxfp4[qs0]), float(kvalues_mxfp4[qs1])) * d * 0.5;
+}
+vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
+    const vec2 v0 = dequantize(ib, iqs, a_offset);
+    const vec2 v1 = dequantize(ib, iqs + 2u, a_offset);
+    return vec4(v0.x, v0.y, v1.x, v1.y);
+}
+#endif
+
 #if defined(DATA_A_F32) || defined(DATA_A_F16) || defined(DATA_A_BF16)
 vec2 get_dm(uint ib, uint a_offset) {
     return vec2(0, 0);
@@ -460,15 +490,29 @@ vec2 get_dm(uint ib, uint a_offset) {
 }
 #endif
 
+#if defined(DATA_A_Q1_0)
+vec2 get_dm(uint ib, uint a_offset) {
+    const float d = float(data_a[a_offset + ib].d);
+    return vec2(d, 0);
+}
+#endif
+
 #if defined(DATA_A_MXFP4)
 vec2 get_dm(uint ib, uint a_offset) {
     return vec2(e8m0_to_fp32(data_a[a_offset + ib].e), 0);
 }
 #endif
 
+#if defined(DATA_A_NVFP4)
+vec2 get_dm(uint ib, uint a_offset) {
+    return vec2(1.0, 0.0);
+}
+#endif
+
 #if defined(DATA_A_Q4_1) || defined(DATA_A_Q5_1)
 vec2 get_dm(uint ib, uint a_offset) {
-    return vec2(float(data_a[a_offset + ib].d), float(data_a[a_offset + ib].m));
+    const vec2 dm = vec2(data_a_packed32[a_offset + ib].dm);
+    return dm;
 }
 #endif
 
@@ -604,6 +648,81 @@ vec2 dequantize(uint ib, uint iqs, uint a_offset) {
                 dscale * float(int8_t(((data_a[a_offset + ib].ql[qsi + 1] >> (b * 4)) & 0xF) | (((data_a[a_offset + ib].qh[qhi + 1] >> qhshift) & 3) << 4)) - 32));
 }
 vec2 get_dm(uint ib, uint a_offset) {
+    return vec2(1, 0);
+}
+#endif
+
+#if defined(DATA_A_TURBO3_0)
+vec2 dequantize(uint ib, uint iqs, uint a_offset) {
+    // PolarQuant 3-bit centroids (Lloyd-Max for Gaussian)
+    const float centroids[8] = float[8](
+        -0.190685, -0.117832, -0.065717, -0.021460,
+         0.021460,  0.065717,  0.117832,  0.190685
+    );
+
+    // iqs is the element index within the block (0..31), we decode 2 consecutive elements
+    const uint j0 = iqs;
+    const uint j1 = iqs + 1;
+
+    // Extract 2-bit low indices from qs (4 per byte)
+    const uint low2_0 = (uint(data_a[a_offset + ib].qs[j0 / 4]) >> ((j0 % 4) * 2)) & 0x3;
+    const uint low2_1 = (uint(data_a[a_offset + ib].qs[j1 / 4]) >> ((j1 % 4) * 2)) & 0x3;
+
+    // Extract 1-bit high from signs (8 per byte)
+    const uint hi1_0 = (uint(data_a[a_offset + ib].signs[j0 / 8]) >> (j0 % 8)) & 0x1;
+    const uint hi1_1 = (uint(data_a[a_offset + ib].signs[j1 / 8]) >> (j1 % 8)) & 0x1;
+
+    // Combine to 3-bit index
+    const uint idx0 = low2_0 | (hi1_0 << 2);
+    const uint idx1 = low2_1 | (hi1_1 << 2);
+
+    return vec2(centroids[idx0], centroids[idx1]);
+}
+vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
+    vec2 v0 = dequantize(ib, iqs, a_offset);
+    vec2 v1 = dequantize(ib, iqs + 2, a_offset);
+    return vec4(v0.x, v0.y, v1.x, v1.y);
+}
+vec2 get_dm(uint ib, uint a_offset) {
+    return vec2(float(data_a[a_offset + ib].norm), 0);
+}
+#endif
+
+#if defined(DATA_A_TQ4_1S)
+vec2 dequantize(uint ib, uint iqs, uint a_offset) {
+    // TQ4_1S: 16-level Lloyd-Max centroids for N(0,1)
+    const float centroids[16] = float[16](
+        -2.732590, -2.069017, -1.618046, -1.256231,
+        -0.942340, -0.656759, -0.388048, -0.128395,
+         0.128395,  0.388048,  0.656759,  0.942340,
+         1.256231,  1.618046,  2.069017,  2.732590
+    );
+
+    // iqs is the element pair index within the block (0..15)
+    const uint j0 = iqs;
+    const uint j1 = iqs + 1;
+
+    // Extract 4-bit nibble indices from qs (2 per byte)
+    const uint idx0 = (uint(data_a[a_offset + ib].qs[j0 / 2]) >> ((j0 & 1) * 4)) & 0xF;
+    const uint idx1 = (uint(data_a[a_offset + ib].qs[j1 / 2]) >> ((j1 & 1) * 4)) & 0xF;
+
+    // Scale by d0 (elements 0-15) or d1 (elements 16-31)
+    const float d0 = float(data_a[a_offset + ib].d0);
+    const float d1 = float(data_a[a_offset + ib].d1);
+    const float s0 = (j0 < 16) ? d0 : d1;
+    const float s1 = (j1 < 16) ? d0 : d1;
+
+    // Returns centroid * scale WITHOUT RHT inverse
+    // (caller must handle pre-rotation for correctness)
+    return vec2(centroids[idx0] * s0, centroids[idx1] * s1);
+}
+vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
+    vec2 v0 = dequantize(ib, iqs, a_offset);
+    vec2 v1 = dequantize(ib, iqs + 2, a_offset);
+    return vec4(v0.x, v0.y, v1.x, v1.y);
+}
+vec2 get_dm(uint ib, uint a_offset) {
+    // No global scale/min — scales are applied per-element in dequantize()
     return vec2(1, 0);
 }
 #endif

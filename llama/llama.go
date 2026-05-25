@@ -136,23 +136,53 @@ func NewContextParams(numCtx int, batchSize int, numSeqMax int, threads int, fla
 	case ml.FlashAttentionAuto:
 		params.flash_attn_type = int32(C.LLAMA_FLASH_ATTN_TYPE_AUTO)
 	}
-	params.type_k = kvCacheTypeFromStr(strings.ToLower(kvCacheType))
-	params.type_v = kvCacheTypeFromStr(strings.ToLower(kvCacheType))
+	params.type_k, params.type_v = kvCacheTypesFromStr(kvCacheType)
 
 	return ContextParams{c: params}
 }
 
-// kvCacheTypeFromStr converts a string cache type to the corresponding GGML type value
+// kvCacheTypesFromStr converts either a single type or "<k>/<v>" into GGML K/V types.
+func kvCacheTypesFromStr(s string) (C.enum_ggml_type, C.enum_ggml_type) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "" {
+		return C.GGML_TYPE_F16, C.GGML_TYPE_F16
+	}
+
+	if strings.Contains(s, "/") {
+		parts := strings.SplitN(s, "/", 2)
+		if len(parts) == 2 {
+			return kvCacheTypeFromStr(parts[0]), kvCacheTypeFromStr(parts[1])
+		}
+	}
+
+	t := kvCacheTypeFromStr(s)
+	return t, t
+}
+
+// kvCacheTypeFromStr converts a string cache type to the corresponding GGML type value.
 func kvCacheTypeFromStr(s string) C.enum_ggml_type {
+	s = strings.ToLower(strings.TrimSpace(s))
 	if s == "" {
 		return C.GGML_TYPE_F16
 	}
 
 	switch s {
+	case "f16":
+		return C.GGML_TYPE_F16
+	case "f32":
+		return C.GGML_TYPE_F32
+	case "bf16":
+		return C.GGML_TYPE_BF16
 	case "q8_0":
 		return C.GGML_TYPE_Q8_0
 	case "q4_0":
 		return C.GGML_TYPE_Q4_0
+	case "turbo2_0":
+		return C.GGML_TYPE_TURBO2_0
+	case "turbo3_0":
+		return C.GGML_TYPE_TURBO3_0
+	case "turbo4_0":
+		return C.GGML_TYPE_TURBO4_0
 	default:
 		return C.GGML_TYPE_F16
 	}

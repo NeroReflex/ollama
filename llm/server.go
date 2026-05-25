@@ -222,7 +222,13 @@ func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath st
 		}
 	}
 
-	kvct := strings.ToLower(envconfig.KvCacheType())
+	kvct := strings.ToLower(strings.TrimSpace(envconfig.KvCacheType()))
+	kvctAuto := false
+	if kvct == "" {
+		// Prefer TurboQuant by default (K=turbo4, V=turbo3) when not explicitly overridden.
+		kvct = "turbo4_0/turbo3_0"
+		kvctAuto = true
+	}
 
 	if tok == nil {
 		flashAttention := ml.FlashAttentionAuto
@@ -232,22 +238,27 @@ func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath st
 			} else {
 				flashAttention = ml.FlashAttentionDisabled
 			}
+		} else if kvctAuto && fa {
+			// Default turbo KV cache requires FA to be on in compatibility runner.
+			flashAttention = ml.FlashAttentionEnabled
 		}
 
 		if kvct != "" {
 			if f.KVCacheTypeIsQuantized(kvct) {
 				if flashAttention != ml.FlashAttentionEnabled {
-					slog.Warn("OLLAMA_FLASH_ATTENTION must be enabled to use a quantized OLLAMA_KV_CACHE_TYPE", "type", kvct)
+					if !kvctAuto {
+						slog.Warn("OLLAMA_FLASH_ATTENTION must be enabled to use a quantized OLLAMA_KV_CACHE_TYPE", "type", kvct)
+					}
 					loadRequest.KvCacheType = ""
 				} else if f.SupportsKVCacheType(kvct) {
 					loadRequest.KvCacheType = kvct
-				} else {
+				} else if !kvctAuto {
 					slog.Warn("unsupported OLLAMA_KV_CACHE_TYPE", "type", kvct)
 				}
 			} else {
 				if f.SupportsKVCacheType(kvct) {
 					loadRequest.KvCacheType = kvct
-				} else {
+				} else if !kvctAuto {
 					slog.Warn("unsupported OLLAMA_KV_CACHE_TYPE", "type", kvct)
 				}
 			}
@@ -260,13 +271,13 @@ func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath st
 			loadRequest.FlashAttention = ml.FlashAttentionEnabled
 
 			// Flash Attention also supports kv cache quantization
-			// Enable if the requested and kv cache type is supported by the model
+			// Enable if the requested kv cache type is supported by the model
 			if f.SupportsKVCacheType(kvct) {
 				loadRequest.KvCacheType = kvct
-			} else {
+			} else if !kvctAuto {
 				slog.Warn("kv cache type not supported by model", "type", kvct)
 			}
-		} else if kvct != "" && kvct != "f16" {
+		} else if kvct != "" && kvct != "f16" && !kvctAuto {
 			slog.Warn("quantized kv cache requested but flash attention disabled", "type", kvct)
 		}
 	}

@@ -1,0 +1,276 @@
+.PHONY: help build install test clean
+
+# Configuration
+DESTDIR ?= /tmp/ollama-install
+BUILD_DIR ?= build_optimized
+CMAKE_PRESET ?= CUDA 13
+JOBS ?= $(shell nproc)
+
+# CPU feature detection
+CPU_FLAGS := $(shell lscpu 2>/dev/null | sed -n 's/^Flags:[[:space:]]*//p')
+HAS_AVX512F := $(findstring avx512f,$(CPU_FLAGS))
+HAS_AVX512CD := $(findstring avx512cd,$(CPU_FLAGS))
+
+# Compiler flags for optimization
+# -march=native: Enable all CPU features supported by the build machine
+# -mavx512f, -mavx512cd: Explicitly include AVX-512 only when supported
+# -flto=thin: Thin LTO for faster builds vs full LTO
+MARCH_FLAGS = -march=native
+ifneq ($(HAS_AVX512F),)
+MARCH_FLAGS += -mavx512f
+endif
+ifneq ($(HAS_AVX512CD),)
+MARCH_FLAGS += -mavx512cd
+endif
+OPTIMIZATION_FLAGS = $(MARCH_FLAGS) -O3 -flto=thin
+COMPILER_FLAGS = -Wno-error
+
+# Go build flags
+GO_LDFLAGS = -ldflags "-s -w"
+
+help:
+	@echo "Ollama optimized build system with CUDA + MLX"
+	@echo ""
+	@echo "Usage:"
+	@echo "  make -f Makefile.build [target] [VAR=value]"
+	@echo ""
+	@echo "Targets:"
+	@echo "  build          Build ollama with CUDA + MLX (default)"
+	@echo "  install        Install to DESTDIR (default: /tmp/ollama-install)"
+	@echo "  test           Run inference tests with GPU verification"
+	@echo "  test-models    Test all available models"
+	@echo "  clean          Clean build artifacts"
+	@echo "  cmake-config   Configure CMake only"
+	@echo ""
+	@echo "Variables:"
+	@echo "  DESTDIR        Installation directory (default: /tmp/ollama-install)"
+	@echo "  BUILD_DIR      CMake build directory (default: build_optimized)"
+	@echo "  CMAKE_PRESET   CMake preset to use (default: CUDA 13)"
+	@echo "  JOBS           Build parallelism (default: number of CPU cores)"
+	@echo ""
+	@echo "Optimization flags used:"
+	@echo "  $(OPTIMIZATION_FLAGS)"
+	@echo ""
+	@echo "Example:"
+	@echo "  make -f Makefile.build build install test DESTDIR=/tmp/ollama-install"
+
+# Initial setup and sync
+setup: sync-patches
+	@echo "✓ Setup complete - vendor trees synced and patched"
+
+sync-patches:
+	@echo "Syncing vendor trees with patches..."
+	make -f Makefile.sync clean checkout apply-patches
+	@echo "✓ Vendor trees ready"
+
+# CMake configuration with optimizations
+cmake-config: sync-patches
+	@echo "Configuring CMake with preset: $(CMAKE_PRESET)"
+	@echo "Build directory: $(BUILD_DIR)"
+	@echo "Optimization flags: $(OPTIMIZATION_FLAGS)"
+	mkdir -p $(BUILD_DIR)
+	cmake -B $(BUILD_DIR) \
+		--preset "$(CMAKE_PRESET)" \
+		-DCMAKE_INSTALL_PREFIX=$(DESTDIR) \
+		-DMLX_ENGINE=ON \
+		-DGGML_LTO=ON \
+		-DGGML_CUDA_GRAPHS=ON \
+		-DGGML_CUDA_FA=ON \
+		-DGGML_CCACHE=ON \
+		-DCMAKE_C_COMPILER=clang \
+		-DCMAKE_CXX_COMPILER=clang++ \
+		-DCMAKE_C_FLAGS_RELEASE="$(OPTIMIZATION_FLAGS) $(COMPILER_FLAGS)" \
+		-DCMAKE_CXX_FLAGS_RELEASE="$(OPTIMIZATION_FLAGS) $(COMPILER_FLAGS)" \
+		-DCMAKE_CUDA_FLAGS_RELEASE="$(COMPILER_FLAGS) -t 2" \
+		-DCMAKE_BUILD_TYPE=Release
+	@echo "✓ CMake configuration complete"
+
+# Build C++ components (ggml, CUDA, MLX)
+build-cpp: cmake-config
+	@echo "Building C++ components with $(JOBS) parallel jobs..."
+	cmake --build $(BUILD_DIR) \
+		--config Release \
+		--parallel $(JOBS) \
+		--verbose
+	@echo "✓ C++ build complete"
+
+# Build Go components
+build-go: build-cpp
+	@echo "Building Go binaries..."
+	CGO_ENABLED=1 \
+	CGO_CFLAGS="-I$(DESTDIR)/include -I$(shell pwd)/ml/backend/ggml/ggml/src -I$(shell pwd)/ml/backend/ggml/ggml/src/include" \
+	CGO_LDFLAGS="-L$(DESTDIR)/lib" \
+	go build \
+		$(GO_LDFLAGS) \
+		-o $(BUILD_DIR)/ollama \
+		.
+	@echo "✓ Go build complete: $(BUILD_DIR)/ollama"
+
+# Full build target
+build: build-cpp build-go
+	@echo "✓ Complete build successful"
+
+# Install targets
+install: build
+	@echo "Installing to $(DESTDIR)..."
+	mkdir -p $(DESTDIR)
+	
+	@echo "Installing CMake targets..."
+	cmake --install $(BUILD_DIR) --config Release
+	
+	@echo "Installing Go binary..."
+	mkdir -p $(DESTDIR)/bin
+	cp $(BUILD_DIR)/ollama $(DESTDIR)/bin/ollama
+	chmod +x $(DESTDIR)/bin/ollama
+	
+	@echo ""
+	@echo "✓ Installation complete to: $(DESTDIR)"
+	@echo "  Binary: $(DESTDIR)/bin/ollama"
+	@echo "  Libraries: $(DESTDIR)/lib"
+	@echo ""
+	@echo "To use installed Ollama:"
+	@echo "  export PATH=$(DESTDIR)/bin:\$$PATH"
+	@echo "  ollama serve"
+
+# Pre-test checks
+test-check-install:
+	@if [ ! -f "$(DESTDIR)/bin/ollama" ]; then \
+		echo "ERROR: ollama binary not found at $(DESTDIR)/bin/ollama"; \
+		echo "Please run 'make -f Makefile.build install' first"; \
+		exit 1; \
+	fi
+
+# Verify CUDA support and detect GPU
+test-gpu-support: test-check-install
+	@echo "Checking GPU support..."
+	@echo ""
+	@echo "=== System GPU Information ==="
+	@if command -v nvidia-smi >/dev/null 2>&1; then \
+		nvidia-smi --query-gpu=index,name,driver_version,compute_cap -u; \
+		echo ""; \
+		echo "GPU Device Count:"; \
+		nvidia-smi --query-gpu=count --format=csv,noheader | head -1; \
+	else \
+		echo "WARNING: nvidia-smi not found - NVIDIA GPU tools not available"; \
+	fi
+	@echo ""
+	@echo "=== Checking Ollama CUDA Support ==="
+	export PATH=$(DESTDIR)/bin:$$PATH && \
+	$(DESTDIR)/bin/ollama --version
+	@echo ""
+	@echo "=== Library Dependencies ==="
+	ldd $(DESTDIR)/bin/ollama 2>/dev/null | grep -E "cuda|ggml" || echo "Note: Use ldd on Linux to check dependencies"
+	@echo ""
+
+# List available models
+list-models:
+	@echo "Checking for available Ollama models..."
+	@if [ -d "$(HOME)/.ollama/models" ]; then \
+		echo "Local models in $(HOME)/.ollama/models:"; \
+		find $(HOME)/.ollama/models -type f -name "Modelfile" 2>/dev/null | while read f; do \
+			dir=$$(dirname "$$f"); \
+			name=$$(basename "$$dir"); \
+			echo "  - $$name"; \
+		done; \
+	else \
+		echo "Note: Create models with 'ollama pull <model>'"; \
+		echo "Popular small models for testing:"; \
+		echo "  - ollama pull neural-chat:latest        (4.1B, ~1.7GB)"; \
+		echo "  - ollama pull granite:latest            (3B, ~1.7GB)"; \
+		echo "  - ollama pull tinyllama:latest          (1.1B, ~637MB)"; \
+		echo "  - ollama pull mistral:latest            (7B, ~4.1GB)"; \
+		echo "  - ollama pull llama2:7b                 (7B, ~3.8GB)"; \
+		echo ""; \
+		echo "To pull a model: ollama pull <model>"; \
+	fi
+
+# Test single model with GPU monitoring
+test-model:
+	@if [ -z "$(MODEL)" ]; then \
+		echo "ERROR: MODEL variable not set"; \
+		echo "Usage: make -f Makefile.build test-model MODEL=<model_name>"; \
+		echo ""; \
+		make -f Makefile.build list-models; \
+		exit 1; \
+	fi
+	@echo "Testing model: $(MODEL)"
+	@echo ""
+	@echo "Starting ollama server..."
+	export PATH=$(DESTDIR)/bin:$$PATH && \
+	$(DESTDIR)/bin/ollama serve &
+	SERVER_PID=$$!; \
+	sleep 3; \
+	echo ""; \
+	echo "=== Pre-inference GPU state ===" && \
+	(nvidia-smi --query-gpu=memory.used,memory.free --format=csv,noheader || echo "GPU info unavailable"); \
+	echo ""; \
+	echo "=== Running inference with model: $(MODEL) ===" && \
+	export PATH=$(DESTDIR)/bin:$$PATH && \
+	$(DESTDIR)/bin/ollama run $(MODEL) "What is artificial intelligence? Answer briefly."; \
+	echo ""; \
+	echo "=== Post-inference GPU state ===" && \
+	(nvidia-smi --query-gpu=memory.used,memory.free --format=csv,noheader || echo "GPU info unavailable"); \
+	kill $$SERVER_PID 2>/dev/null || true; \
+	wait $$SERVER_PID 2>/dev/null || true
+
+# Test all models
+test-models: test-check-install test-gpu-support
+	@echo "Testing all available models..."
+	@echo ""
+	@if [ ! -d "$(HOME)/.ollama/models" ] || [ -z "$$(find $(HOME)/.ollama/models -type f -name "Modelfile" 2>/dev/null)" ]; then \
+		echo "No models found. Please pull at least one model:"; \
+		echo "  make -f Makefile.build list-models"; \
+		echo ""; \
+		echo "Then run: ollama pull <model_name>"; \
+		exit 1; \
+	fi
+	@./scripts/test-all-installed-models-gpu.sh $(DESTDIR)
+
+# Comprehensive test target
+test: test-check-install test-gpu-support
+	@echo ""
+	@echo "=== Ollama CUDA Inference Test ==="
+	@echo ""
+	@export PATH=$(DESTDIR)/bin:$$PATH && \
+	$(DESTDIR)/bin/ollama serve &
+	SERVER_PID=$$!; \
+	sleep 3; \
+	\
+	echo "=== CUDA Device Check Before Inference ===" && \
+	nvidia-smi --query-gpu=index,name,memory.total,memory.used --format=csv && \
+	echo ""; \
+	\
+	echo "=== Testing with tinyllama (small model for quick test) ===" && \
+	if ! $(DESTDIR)/bin/ollama list 2>/dev/null | grep -q tinyllama; then \
+		echo "Pulling tinyllama model for testing..."; \
+		$(DESTDIR)/bin/ollama pull tinyllama; \
+	fi && \
+	echo "Running inference..." && \
+	export PATH=$(DESTDIR)/bin:$$PATH && \
+	$(DESTDIR)/bin/ollama run tinyllama "Tell me about GPU inference in one sentence." && \
+	\
+	echo "" && \
+	echo "=== CUDA Device Check After Inference ===" && \
+	nvidia-smi --query-gpu=index,name,memory.total,memory.used --format=csv && \
+	\
+	kill $$SERVER_PID 2>/dev/null || true; \
+	wait $$SERVER_PID 2>/dev/null || true; \
+	\
+	echo "" && \
+	echo "✓ GPU inference test complete - check VRAM usage above"
+
+# Clean build artifacts
+clean:
+	@echo "Cleaning build artifacts..."
+	rm -rf $(BUILD_DIR)
+	go clean
+	@echo "✓ Clean complete"
+
+# Full clean (includes vendor)
+clean-all: clean
+	@echo "Cleaning vendor trees..."
+	make -f Makefile.sync clean
+	@echo "✓ Full clean complete"
+
+# Default target
+.DEFAULT_GOAL := build

@@ -141,6 +141,50 @@ type DeviceID struct {
 	Library string `json:"backend,omitempty"`
 }
 
+func CanonicalLibraryName(name string) string {
+	trimmed := strings.TrimSpace(name)
+	upper := strings.ToUpper(trimmed)
+
+	switch {
+	case upper == "CPU":
+		return "cpu"
+	case upper == "METAL":
+		return "Metal"
+	case upper == "ROCM" || strings.HasPrefix(upper, "ROCM"):
+		return "ROCm"
+	case upper == "CUDA" || strings.HasPrefix(upper, "CUDA"):
+		return "CUDA"
+	case upper == "VULKAN" || strings.HasPrefix(upper, "VULKAN"):
+		return "Vulkan"
+	default:
+		return trimmed
+	}
+}
+
+func (d DeviceID) LibraryFamily() string {
+	return CanonicalLibraryName(d.Library)
+}
+
+func (d DeviceID) IsCPU() bool {
+	return d.LibraryFamily() == "cpu"
+}
+
+func (d DeviceID) IsCUDA() bool {
+	return d.LibraryFamily() == "CUDA"
+}
+
+func (d DeviceID) IsMetal() bool {
+	return d.LibraryFamily() == "Metal"
+}
+
+func (d DeviceID) IsROCm() bool {
+	return d.LibraryFamily() == "ROCm"
+}
+
+func (d DeviceID) IsVulkan() bool {
+	return d.LibraryFamily() == "Vulkan"
+}
+
 // DeviceMemory provides a breakdown of the memory needed
 // per device, such as a CPU or GPU.
 type DeviceMemory struct {
@@ -337,7 +381,7 @@ type SystemInfo struct {
 
 func (d DeviceInfo) Compute() string {
 	// AMD gfx is encoded into the major minor in hex form
-	if strings.EqualFold(d.Library, "ROCm") {
+	if d.IsROCm() {
 		return fmt.Sprintf("gfx%x%02x", d.ComputeMajor, d.ComputeMinor)
 	}
 	return strconv.Itoa(d.ComputeMajor) + "." + strconv.Itoa(d.ComputeMinor)
@@ -351,7 +395,7 @@ func (d DeviceInfo) Driver() string {
 // on the device for overhead (e.g. VRAM consumed by context structures independent
 // of model allocations)
 func (d DeviceInfo) MinimumMemory() uint64 {
-	if d.Library == "Metal" {
+	if d.IsMetal() {
 		return 512 * format.MebiByte
 	}
 	return 457 * format.MebiByte
@@ -484,11 +528,18 @@ func (a DeviceInfo) IsBetter(b DeviceInfo) bool {
 // For each GPU, check if it does NOT support flash attention
 func FlashAttentionSupported(l []DeviceInfo) bool {
 	for _, gpu := range l {
-		supportsFA := gpu.Library == "cpu" ||
-			gpu.Name == "Metal" || gpu.Library == "Metal" ||
-			(gpu.Library == "CUDA" && gpu.DriverMajor >= 7 && !(gpu.ComputeMajor == 7 && gpu.ComputeMinor == 2)) ||
-			gpu.Library == "ROCm" ||
-			gpu.Library == "Vulkan"
+		supportsFA := gpu.IsCPU() ||
+			gpu.Name == "Metal" || gpu.IsMetal() ||
+			gpu.IsROCm() ||
+			gpu.IsVulkan()
+
+		if gpu.IsCUDA() {
+			// Some ggml discovery paths identify CUDA devices correctly but do not
+			// populate compute/driver metadata. Treat unknown CUDA capability as
+			// potentially FA-capable instead of forcing a false negative.
+			supportsFA = gpu.DriverMajor < 0 || gpu.ComputeMajor < 0 ||
+				(gpu.DriverMajor >= 7 && !(gpu.ComputeMajor == 7 && gpu.ComputeMinor == 2))
+		}
 
 		if !supportsFA {
 			return false
@@ -551,7 +602,7 @@ func GetDevicesEnv(l []DeviceInfo, mustFilter bool) map[string]string {
 func (d DeviceInfo) NeedsInitValidation() bool {
 	// ROCm: rocblas will crash on unsupported devices.
 	// CUDA: verify CC is supported by the version of the library
-	return d.Library == "ROCm" || d.Library == "CUDA"
+	return d.IsROCm() || d.IsCUDA()
 }
 
 // Set the init validation environment variable
@@ -566,7 +617,7 @@ func (d DeviceInfo) PreferredLibrary(other DeviceInfo) bool {
 	// TODO in the future if we find Vulkan is better than ROCm on some devices
 	// that implementation can live here.
 
-	if d.Library == "CUDA" || d.Library == "ROCm" {
+	if d.IsCUDA() || d.IsROCm() {
 		return true
 	}
 	return false
@@ -574,7 +625,7 @@ func (d DeviceInfo) PreferredLibrary(other DeviceInfo) bool {
 
 func (d DeviceInfo) updateVisibleDevicesEnv(env map[string]string, mustFilter bool) {
 	var envVar string
-	switch d.Library {
+	switch d.LibraryFamily() {
 	case "ROCm":
 		// ROCm must be filtered as it can crash the runner on unsupported devices
 		envVar = "ROCR_VISIBLE_DEVICES"

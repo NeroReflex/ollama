@@ -214,7 +214,7 @@ func NewLlamaServer(systemInfo ml.SystemInfo, gpus []ml.DeviceInfo, modelPath st
 	// Older CUDA GPUs only have tile/vec FA kernels which abort on dk512 non-GQA attention.
 	if fa && f.KV().Architecture() == "gemma4" {
 		for _, gpu := range gpus {
-			if gpu.Library == "CUDA" && (gpu.ComputeMajor < 7 || (gpu.ComputeMajor == 7 && gpu.ComputeMinor < 5)) {
+			if gpu.IsCUDA() && gpu.ComputeMajor >= 0 && (gpu.ComputeMajor < 7 || (gpu.ComputeMajor == 7 && gpu.ComputeMinor < 5)) {
 				slog.Debug("disabling flash attention for gemma4 on pre-Turing GPU", "compute", fmt.Sprintf("%d.%d", gpu.ComputeMajor, gpu.ComputeMinor))
 				fa = false
 				break
@@ -731,7 +731,7 @@ func (s *llamaServer) Load(ctx context.Context, systemInfo ml.SystemInfo, system
 	// Linux  with a model larger than free space, mmap leads to thrashing
 	// For CPU loads we want the memory to be allocated, not FS cache
 	totalSize, _ := s.MemorySize()
-	if (runtime.GOOS == "windows" && len(gpus) > 0 && gpus[0].Library == "CUDA" && s.options.UseMMap == nil) ||
+	if (runtime.GOOS == "windows" && len(gpus) > 0 && gpus[0].IsCUDA() && s.options.UseMMap == nil) ||
 		(runtime.GOOS == "linux" && systemInfo.FreeMemory < totalSize && s.options.UseMMap == nil) ||
 		(len(gpus) == 0 && s.options.UseMMap == nil) ||
 		(len(gpus) > 0 && gpus[0].Library == "Vulkan" && s.options.UseMMap == nil) ||
@@ -999,6 +999,7 @@ func (s *llmServer) buildLayout(systemGPUs []ml.DeviceInfo, memory *ml.BackendMe
 
 	gpuLayers := ml.GPULayersList{}
 	for _, gl := range ml.ByLibrary(gpus) {
+		haveRunnerGPUInfo := len(memory.GPUs) > 0
 		// If a GPU already has a graph allocated on it, then we should continue to use it.
 		// Otherwise, we lose information that we got from previous allocations, which can
 		// cause cycling. Plus, we get more information about required allocation from each
@@ -1030,8 +1031,11 @@ func (s *llmServer) buildLayout(systemGPUs []ml.DeviceInfo, memory *ml.BackendMe
 				}
 			}
 			if !found {
-				// The runner doesn't report seeing this GPU
-				gl[i].FreeMemory = 0
+				// If the runner reported GPU memory telemetry and this GPU is absent,
+				// treat it as unavailable. Otherwise keep system-discovered free memory.
+				if haveRunnerGPUInfo {
+					gl[i].FreeMemory = 0
+				}
 			}
 		}
 
@@ -1085,11 +1089,11 @@ nextLayer:
 			slog.Info("model requires more system memory than is currently available, evicting a model to make space", "required", cpuSize, "free", systemInfo.FreeMemory)
 			return fmt.Errorf("model requires more system memory than is currently available %w", ErrLoadRequiredFull)
 		}
-	}
 
-	if len(systemGPUs) > 0 && gpuLayers.Sum() == 0 && s.options.NumGPU != 0 {
-		slog.Info("model would load on cpu only despite available gpu devices", "loaded layers", gpuLayers.Sum())
-		return ErrLoadRequiredFull
+		if len(systemGPUs) > 0 && gpuLayers.Sum() == 0 && s.options.NumGPU != 0 {
+			slog.Info("model would load on cpu only despite available gpu devices", "loaded layers", gpuLayers.Sum())
+			return ErrLoadRequiredFull
+		}
 	}
 
 	// On linux and windows, over-allocating CPU memory will almost always result in an error

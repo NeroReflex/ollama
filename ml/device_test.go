@@ -58,3 +58,41 @@ func TestGetDevicesEnvWarnsOnConflictingOverrides(t *testing.T) {
 		t.Fatalf("expected warning log, got %q", logs.String())
 	}
 }
+
+func TestCanonicalLibraryName(t *testing.T) {
+	if got, want := CanonicalLibraryName("CUDA0"), "CUDA"; got != want {
+		t.Fatalf("CanonicalLibraryName(CUDA0) = %q, want %q", got, want)
+	}
+
+	if got, want := CanonicalLibraryName("rocm"), "ROCm"; got != want {
+		t.Fatalf("CanonicalLibraryName(rocm) = %q, want %q", got, want)
+	}
+}
+
+func TestFlashAttentionSupportedForCUDAFamilyWithoutCapabilities(t *testing.T) {
+	devices := []DeviceInfo{{
+		DeviceID:     DeviceID{Library: "CUDA0", ID: "0000:01:00.0"},
+		DriverMajor:  -1,
+		DriverMinor:  -1,
+		ComputeMajor: -1,
+		ComputeMinor: -1,
+	}}
+
+	if !FlashAttentionSupported(devices) {
+		t.Fatal("expected CUDA-family device with unknown capabilities to avoid forced flash attention disable")
+	}
+}
+
+func TestFlashAttentionSupportedRejectsSM72(t *testing.T) {
+	devices := []DeviceInfo{{
+		DeviceID:     DeviceID{Library: "CUDA", ID: "0000:01:00.0"},
+		DriverMajor:  12,
+		DriverMinor:  8,
+		ComputeMajor: 7,
+		ComputeMinor: 2,
+	}}
+
+	if FlashAttentionSupported(devices) {
+		t.Fatal("expected SM 7.2 CUDA device to be rejected for flash attention")
+	}
+}

@@ -178,7 +178,7 @@ func New(modelPath string, params ml.BackendParams) (ml.Backend, error) {
 	}
 
 	requiredMemory.CPU.Name = C.GoString(C.ggml_backend_dev_name(cpuDeviceBufferType.d))
-	requiredMemory.CPU.Library = C.GoString(C.ggml_backend_dev_name(cpuDeviceBufferType.d))
+	requiredMemory.CPU.Library = ml.CanonicalLibraryName(C.GoString(C.ggml_backend_reg_name(C.ggml_backend_dev_backend_reg(cpuDeviceBufferType.d))))
 	var props C.struct_ggml_backend_dev_props
 	C.ggml_backend_dev_get_props(cpuDeviceBufferType.d, &props)
 	if props.device_id != nil {
@@ -201,7 +201,7 @@ func New(modelPath string, params ml.BackendParams) (ml.Backend, error) {
 
 		btDeviceMemory[bt] = &requiredMemory.GPUs[i]
 		requiredMemory.GPUs[i].Name = C.GoString(C.ggml_backend_dev_name(d))
-		requiredMemory.GPUs[i].Library = C.GoString(C.ggml_backend_dev_name(d))
+		requiredMemory.GPUs[i].Library = ml.CanonicalLibraryName(C.GoString(C.ggml_backend_reg_name(C.ggml_backend_dev_backend_reg(d))))
 		var props C.struct_ggml_backend_dev_props
 		C.ggml_backend_dev_get_props(d, &props)
 		if props.device_id != nil {
@@ -718,7 +718,7 @@ func (b *Backend) BackendDevices() []ml.DeviceInfo {
 		C.ggml_backend_dev_get_props(dev, &props)
 		info.Name = C.GoString(props.name)
 		info.Description = C.GoString(props.description)
-		info.Library = C.GoString(C.ggml_backend_dev_name(dev))
+		info.Library = ml.CanonicalLibraryName(C.GoString(C.ggml_backend_reg_name(C.ggml_backend_dev_backend_reg(dev))))
 		if props.device_id != nil {
 			info.ID = C.GoString(props.device_id)
 			info.PCIID = C.GoString(props.device_id)

@@ -45,6 +45,7 @@ func TestLLMServerFitGPU(t *testing.T) {
 			gpus:        []ml.DeviceInfo{{DeviceID: ml.DeviceID{ID: "gpu0"}, FreeMemory: 64 * format.MebiByte}},
 			layers:      []int{100 * format.MebiByte, 100 * format.MebiByte},
 			numGPU:      -1,
+			requireFull: true,
 			expectedErr: ErrLoadRequiredFull,
 		},
 		{
@@ -232,6 +233,36 @@ func TestLLMServerFitGPU(t *testing.T) {
 				t.Errorf("fitGPU assigned %v, want %v", gpuLayers, tt.expected)
 			}
 		})
+	}
+}
+
+func TestCreateLayoutWithoutRunnerGPUInfo(t *testing.T) {
+	var systemInfo ml.SystemInfo
+	systemInfo.TotalMemory = 4 * format.GibiByte
+	systemInfo.FreeMemory = 2 * format.GibiByte
+	systemInfo.FreeSwap = format.GibiByte
+
+	s := &ollamaServer{
+		llmServer: llmServer{
+			totalLayers: 3,
+			options: api.Options{Runner: api.Runner{NumGPU: -1}},
+		},
+	}
+
+	gpus := []ml.DeviceInfo{{DeviceID: ml.DeviceID{ID: "gpu0"}, FreeMemory: 1024 * format.MebiByte}}
+
+	// Simulate a fit response that only reports CPU requirements.
+	memory := &ml.BackendMemory{CPU: ml.DeviceMemory{
+		Weights: []uint64{200 * format.MebiByte, 200 * format.MebiByte, 200 * format.MebiByte},
+		Cache:   make([]uint64, 3),
+	}}
+
+	gpuLayers, err := s.createLayout(systemInfo, gpus, memory, false, 0)
+	if err != nil {
+		t.Fatalf("createLayout returned error: %v", err)
+	}
+	if gpuLayers.Sum() == 0 {
+		t.Fatalf("createLayout assigned zero GPU layers with available system GPU memory and no runner GPU telemetry")
 	}
 }
 

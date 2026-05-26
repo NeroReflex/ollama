@@ -32,7 +32,11 @@ const char * dl_error() {
 #else
 
 dl_handle * dl_load_library(const fs::path & path) {
-    dl_handle * handle = dlopen(path.string().c_str(), RTLD_NOW | RTLD_LOCAL);
+    // Use RTLD_LAZY instead of RTLD_NOW to defer symbol resolution and .init_array execution.
+    // This prevents SIGILL/SIGABRT when loading CPU variant backends compiled with
+    // architecture-specific flags (-mavx512f, -mamx-tile) on systems that don't support those ISAs.
+    // The score function (only symbol accessed) uses CPUID-only code and is safe to execute.
+    dl_handle *const handle = dlopen(path.string().c_str(), RTLD_LAZY | RTLD_LOCAL);
     return handle;
 }
 

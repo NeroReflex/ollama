@@ -7,6 +7,8 @@ LOG_DIR="${INSTALL_DIR}/gpu-test-logs"
 SUMMARY="${LOG_DIR}/summary.txt"
 UNLOAD_WAIT_SECS="${UNLOAD_WAIT_SECS:-180}"
 VRAM_RECOVERY_MARGIN_MIB="${VRAM_RECOVERY_MARGIN_MIB:-256}"
+SERVER_HOST="${SERVER_HOST:-127.0.0.1}"
+SERVER_PORT="${SERVER_PORT:-}"
 
 mkdir -p "${LOG_DIR}"
 : > "${SUMMARY}"
@@ -31,11 +33,48 @@ has_running_models() {
   awk 'NR > 1 { found = 1 } END { exit found ? 0 : 1 }' <<<"${ps_output}"
 }
 
+port_in_use() {
+  local port="$1"
+  ss -ltn | awk '{print $4}' | grep -Eq "(^|:)$port$"
+}
+
+pick_server_port() {
+  local candidate
+
+  if [[ -n "${SERVER_PORT}" ]]; then
+    if port_in_use "${SERVER_PORT}"; then
+      echo "ERROR: requested SERVER_PORT=${SERVER_PORT} is already in use" | tee -a "${SUMMARY}"
+      return 1
+    fi
+    return 0
+  fi
+
+  for candidate in 11534 11535 11536 11537 11538 11539 11540 11541 11542 11543 11544; do
+    if ! port_in_use "${candidate}"; then
+      SERVER_PORT="${candidate}"
+      return 0
+    fi
+  done
+
+  echo "ERROR: no free port found in test range 11534-11544" | tee -a "${SUMMARY}"
+  return 1
+}
+
 wait_for_server_ready() {
   for _ in $(seq 1 30); do
     if "${BIN}" list >/dev/null 2>&1; then
       return 0
     fi
+
+    if [[ -n "${SERVER_PID:-}" ]] && ! kill -0 "${SERVER_PID}" >/dev/null 2>&1; then
+      if grep -q "address already in use" "${CURRENT_SERVER_LOG}" 2>/dev/null; then
+        echo "ERROR: server bind collision on ${OLLAMA_HOST}" | tee -a "${SUMMARY}"
+      else
+        echo "ERROR: server exited before becoming ready (host ${OLLAMA_HOST})" | tee -a "${SUMMARY}"
+      fi
+      return 1
+    fi
+
     sleep 1
   done
 
@@ -72,8 +111,10 @@ wait_for_vram_recovery() {
 start_server() {
   local server_log="$1"
 
+  CURRENT_SERVER_LOG="${server_log}"
   : > "${server_log}"
   PATH="${INSTALL_DIR}/bin:${PATH}" \
+  OLLAMA_HOST="${OLLAMA_HOST}" \
   OLLAMA_DEBUG=1 \
   OLLAMA_FLASH_ATTENTION=1 \
   OLLAMA_KV_CACHE_TYPE=turbo3_0 \
@@ -83,7 +124,7 @@ start_server() {
   SERVER_PID=$!
 
   if ! wait_for_server_ready; then
-    echo "ERROR: server did not become ready" | tee -a "${SUMMARY}"
+    echo "ERROR: server did not become ready on ${OLLAMA_HOST}" | tee -a "${SUMMARY}"
     return 1
   fi
 
@@ -103,9 +144,15 @@ nvidia-smi --query-gpu=index,name,memory.total,memory.used,utilization.gpu --for
 BASELINE_VRAM="$(gpu_used_mib)"
 echo "baseline_vram=${BASELINE_VRAM}MiB recovery_margin=${VRAM_RECOVERY_MARGIN_MIB}MiB" | tee -a "${SUMMARY}"
 
-# Ensure no stale instance is left on port 11434.
-pkill -f "ollama serve" >/dev/null 2>&1 || true
+if ! pick_server_port; then
+  exit 1
+fi
+
+export OLLAMA_HOST="http://${SERVER_HOST}:${SERVER_PORT}"
+echo "test_host=${OLLAMA_HOST}" | tee -a "${SUMMARY}"
+
 SERVER_PID=""
+CURRENT_SERVER_LOG=""
 trap 'stop_server' EXIT
 
 LIST_SERVER_LOG="${LOG_DIR}/list-server.log"
@@ -145,7 +192,7 @@ for model in "${MODELS[@]}"; do
   BEFORE="$(gpu_used_mib)"
 
   set +e
-  timeout 180 curl -sS http://127.0.0.1:11434/api/generate \
+  timeout 180 curl -sS "${OLLAMA_HOST}/api/generate" \
     -H 'Content-Type: application/json' \
     -d "{\"model\":\"${model}\",\"prompt\":\"Respond with one short sentence.\",\"stream\":false,\"keep_alive\":\"0s\",\"options\":{\"num_predict\":32}}" \
     > "${MODEL_LOG}" 2>&1

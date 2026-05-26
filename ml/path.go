@@ -41,6 +41,9 @@ var LibOllamaPath string = func() string {
 	paths := []string{
 		libPath,
 
+		// Local build layout where binary and libraries live under the same build dir.
+		filepath.Join(filepath.Dir(exe), "lib", "ollama"),
+
 		// build paths for development
 		filepath.Join(filepath.Dir(exe), "build", "lib", "ollama"),
 		filepath.Join(cwd, "build", "lib", "ollama"),

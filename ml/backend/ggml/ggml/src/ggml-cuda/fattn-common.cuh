@@ -4,6 +4,8 @@
 #include "convert.cuh"
 #include "vecdotq.cuh"
 #include "turbo-quant.cuh"
+#include "planar-quant.cuh"
+#include "iso-quant.cuh"
 
 #include <cstdint>
 
@@ -916,6 +918,98 @@ static __device__ __forceinline__ void dequantize_V_turbo4_0(const void * __rest
     }
 }
 
+// Planar3 V dequantize: extract `ne` float/half values at position i0.
+// Uses 2D Givens rotation for correlation preservation.
+template <typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_planar3_0(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    const block_planar3_0 * x = (const block_planar3_0 *) vx;
+
+    const int64_t ib   = i0 / QK_PLANAR3;
+    const int     j0   = i0 % QK_PLANAR3;
+
+    static_assert(ne == 2 || ne == 4, "bad ne");
+
+    if constexpr (ne == 4) {
+        // When j0 % 4 == 0 (always true from VEC kernel), we process 4 elements
+        float2 v0, v1;
+        dequantize_planar3_0(vx, ib, j0,     v0);
+        dequantize_planar3_0(vx, ib, j0 + 2, v1);
+
+#ifdef FP16_AVAILABLE
+        if constexpr (std::is_same_v<T, half>) {
+            ((half2 *) dst)[0] = make_half2(__float2half(v0.x), __float2half(v0.y));
+            ((half2 *) dst)[1] = make_half2(__float2half(v1.x), __float2half(v1.y));
+        } else
+#endif // FP16_AVAILABLE
+        if constexpr (std::is_same_v<T, float>) {
+            ((float2 *) dst)[0] = v0;
+            ((float2 *) dst)[1] = v1;
+        } else {
+            static_assert(std::is_same_v<T, void>, "unsupported type");
+        }
+    } else { // ne == 2
+        float2 v;
+        dequantize_planar3_0(vx, ib, j0, v);
+
+#ifdef FP16_AVAILABLE
+        if constexpr (std::is_same_v<T, half>) {
+            ((half2 *) dst)[0] = make_half2(__float2half(v.x), __float2half(v.y));
+        } else
+#endif // FP16_AVAILABLE
+        if constexpr (std::is_same_v<T, float>) {
+            ((float2 *) dst)[0] = v;
+        } else {
+            static_assert(std::is_same_v<T, void>, "unsupported type");
+        }
+    }
+}
+
+// Iso3 V dequantize: extract `ne` float/half values at position i0.
+// Uses quaternion sandwich product for isotropic 4D rotations.
+template <typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_iso3_0(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    const block_iso3_0 * x = (const block_iso3_0 *) vx;
+
+    const int64_t ib   = i0 / QK_ISO3;
+    const int     j0   = i0 % QK_ISO3;
+
+    static_assert(ne == 2 || ne == 4, "bad ne");
+
+    if constexpr (ne == 4) {
+        // When j0 % 4 == 0 (always true from VEC kernel), we process 4 elements
+        float2 v0, v1;
+        dequantize_iso3_0(vx, ib, j0,     v0);
+        dequantize_iso3_0(vx, ib, j0 + 2, v1);
+
+#ifdef FP16_AVAILABLE
+        if constexpr (std::is_same_v<T, half>) {
+            ((half2 *) dst)[0] = make_half2(__float2half(v0.x), __float2half(v0.y));
+            ((half2 *) dst)[1] = make_half2(__float2half(v1.x), __float2half(v1.y));
+        } else
+#endif // FP16_AVAILABLE
+        if constexpr (std::is_same_v<T, float>) {
+            ((float2 *) dst)[0] = v0;
+            ((float2 *) dst)[1] = v1;
+        } else {
+            static_assert(std::is_same_v<T, void>, "unsupported type");
+        }
+    } else { // ne == 2
+        float2 v;
+        dequantize_iso3_0(vx, ib, j0, v);
+
+#ifdef FP16_AVAILABLE
+        if constexpr (std::is_same_v<T, half>) {
+            ((half2 *) dst)[0] = make_half2(__float2half(v.x), __float2half(v.y));
+        } else
+#endif // FP16_AVAILABLE
+        if constexpr (std::is_same_v<T, float>) {
+            ((float2 *) dst)[0] = v;
+        } else {
+            static_assert(std::is_same_v<T, void>, "unsupported type");
+        }
+    }
+}
+
 template <ggml_type type_K, int D, int nthreads>
 constexpr __device__ vec_dot_KQ_t get_vec_dot_KQ() {
     if constexpr (type_K == GGML_TYPE_F16) {
@@ -966,6 +1060,10 @@ constexpr __device__ dequantize_V_t get_dequantize_V() {
         return dequantize_V_turbo2_0<T, ne>;
     } else if constexpr (type_V == GGML_TYPE_TURBO4_0) {
         return dequantize_V_turbo4_0<T, ne>;
+    } else if constexpr (type_V == GGML_TYPE_PLANAR3_0) {
+        return dequantize_V_planar3_0<T, ne>;
+    } else if constexpr (type_V == GGML_TYPE_ISO3_0) {
+        return dequantize_V_iso3_0<T, ne>;
     } else {
         static_assert(type_V == -1, "bad type");
         return nullptr;

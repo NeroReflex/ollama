@@ -1,5 +1,7 @@
 #include "common.cuh"
 #include "turbo-quant.cuh"
+#include "planar-quant.cuh"
+#include "iso-quant.cuh"
 
 static __device__ __forceinline__ void dequantize_q1_0(const void * vx, const int64_t ib, const int iqs, float2 & v){
     const block_q1_0 * x = (const block_q1_0 *) vx;

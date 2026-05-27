@@ -368,6 +368,42 @@ typedef struct {
 } block_tq4_1s;                         // 20 bytes total
 static_assert(sizeof(block_tq4_1s) == 20, "wrong tq4_1s block size");
 
+// PlanarQuant 3-bit: 2D Givens rotation + 2-bit quantized + 1-bit QJL
+// Same block layout as turbo3 (norm + 2-bit indices + 1-bit signs)
+// but uses independent cos/sin pair rotations instead of WHT
+#define QK_PLANAR3 128
+#define NL_PLANAR3 (QK_PLANAR3 / 16)
+#define NL_PLANAR3_VEC (QK_PLANAR3 / 4)
+typedef struct {
+    ggml_half  norm;
+    uint8_t    qs[QK_PLANAR3 / 4];
+    uint8_t    signs[QK_PLANAR3 / 8];
+} block_planar3_0;
+static_assert(sizeof(block_planar3_0) == sizeof(ggml_half) + QK_PLANAR3/4 + QK_PLANAR3/8, "wrong planar3_0 block size/padding");
+
+// IsoQuant 3-bit: quaternion 4D rotation + 2-bit quantized + 1-bit QJL
+// Same block layout as planar3
+#define QK_ISO3 128
+#define NL_ISO3 (QK_ISO3 / 16)
+#define NL_ISO3_VEC (QK_ISO3 / 4)
+typedef struct {
+    ggml_half  norm;
+    uint8_t    qs[QK_ISO3 / 4];
+    uint8_t    signs[QK_ISO3 / 8];
+} block_iso3_0;
+static_assert(sizeof(block_iso3_0) == sizeof(ggml_half) + QK_ISO3/4 + QK_ISO3/8, "wrong iso3_0 block size/padding");
+
+// PlanarQuant 4-bit and IsoQuant 4-bit: same block layout as turbo4
+// 3-bit indices (nibble-packed or 4-bit) + norm, reuses block_turbo4_0 layout
+#define QK_PLANAR4 128
+#define NL_PLANAR4 8
+#define NL_PLANAR4_VEC 32
+#define QK_ISO4 128
+#define NL_ISO4 8
+#define NL_ISO4_VEC 32
+typedef block_turbo4_0 block_planar4_0;
+typedef block_turbo4_0 block_iso4_0;
+
 //
 // Super-block quantization structures
 //

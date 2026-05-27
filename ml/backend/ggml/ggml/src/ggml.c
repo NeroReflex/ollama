@@ -791,27 +791,35 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
     },
     [GGML_TYPE_PLANAR3_0] = {
         .type_name                = "planar3_0",
-        .blck_size                = 128,  // placeholder block size
-        .type_size                = 8,    // placeholder type size
+        .blck_size                = QK_PLANAR3,
+        .type_size                = sizeof(block_planar3_0),
         .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_planar3_0,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_planar3_0_ref,
     },
     [GGML_TYPE_ISO3_0] = {
         .type_name                = "iso3_0",
-        .blck_size                = 128,  // placeholder block size
-        .type_size                = 8,    // placeholder type size
+        .blck_size                = QK_ISO3,
+        .type_size                = sizeof(block_iso3_0),
         .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_iso3_0,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_iso3_0_ref,
     },
     [GGML_TYPE_PLANAR4_0] = {
         .type_name                = "planar4_0",
-        .blck_size                = 128,  // placeholder block size
-        .type_size                = 8,    // placeholder type size
+        .blck_size                = QK_PLANAR4,
+        .type_size                = sizeof(block_planar4_0),
         .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_planar4_0,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_planar4_0_ref,
     },
     [GGML_TYPE_ISO4_0] = {
         .type_name                = "iso4_0",
-        .blck_size                = 128,  // placeholder block size
-        .type_size                = 8,    // placeholder type size
+        .blck_size                = QK_ISO4,
+        .type_size                = sizeof(block_iso4_0),
         .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_iso4_0,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_iso4_0_ref,
     },
     [GGML_TYPE_Q2_K] = {
         .type_name                = "q2_K",

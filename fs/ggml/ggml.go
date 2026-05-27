@@ -857,7 +857,7 @@ func (f GGML) SupportsKVCacheType(cacheType string) bool {
 		return true
 	}
 
-	supported := []string{"f16", "f32", "bf16", "q8_0", "q4_0", "turbo2_0", "turbo3_0", "turbo4_0"}
+	supported := []string{"f16", "f32", "bf16", "q8_0", "q4_0", "turbo2_0", "turbo3_0", "turbo4_0", "planar3_0", "planar3", "iso3_0", "iso3", "planar4_0", "planar4", "iso4_0", "iso4"}
 
 	if strings.Contains(cacheType, "/") {
 		parts := strings.SplitN(cacheType, "/", 2)

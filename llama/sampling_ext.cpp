@@ -83,11 +83,9 @@ struct llama_grammar *grammar_init(char* grammar, uint32_t* tokens, size_t n_tok
             return nullptr;
         }
 
-        auto * vocab = new ollama_vocab();
-        vocab->set_eog_tokens(eog_tokens, n_eog_tokens);
-        vocab->add_token_pieces(tokens, n_tokens, pieces);
-
-        return llama_grammar_init_impl(nullptr, vocab, grammar, "root", false, nullptr, 0, nullptr, 0);
+        // Note: Current llama_grammar_init_impl doesn't require external vocab setup
+        // Tokens, pieces, and eog_tokens are handled by grammar rules themselves
+        return llama_grammar_init_impl(nullptr, grammar, "root", false, nullptr, 0, nullptr, 0);
 
     } catch (const std::exception& e) {
         LOG_ERR("%s: exception during initialization: %s\n", __func__, e.what());
@@ -97,7 +95,6 @@ struct llama_grammar *grammar_init(char* grammar, uint32_t* tokens, size_t n_tok
 
 void grammar_free(struct llama_grammar *g) {
     if (g != nullptr) {
-        delete g->o_vocab;
         llama_grammar_free_impl(g);
     }
 }

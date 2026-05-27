@@ -219,6 +219,18 @@ static void ggml_vec_dot_turbo2_0_f32(int n, float * GGML_RESTRICT s, size_t bs,
 static void ggml_vec_dot_turbo4_0_f32(int n, float * GGML_RESTRICT s, size_t bs,
                                        const void * GGML_RESTRICT vx, size_t bx,
                                        const void * GGML_RESTRICT vy, size_t by, int nrc);
+static void ggml_vec_dot_planar3_0_f32(int n, float * GGML_RESTRICT s, size_t bs,
+                                       const void * GGML_RESTRICT vx, size_t bx,
+                                       const void * GGML_RESTRICT vy, size_t by, int nrc);
+static void ggml_vec_dot_iso3_0_f32(int n, float * GGML_RESTRICT s, size_t bs,
+                                    const void * GGML_RESTRICT vx, size_t bx,
+                                    const void * GGML_RESTRICT vy, size_t by, int nrc);
+static void ggml_vec_dot_planar4_0_f32(int n, float * GGML_RESTRICT s, size_t bs,
+                                       const void * GGML_RESTRICT vx, size_t bx,
+                                       const void * GGML_RESTRICT vy, size_t by, int nrc);
+static void ggml_vec_dot_iso4_0_f32(int n, float * GGML_RESTRICT s, size_t bs,
+                                    const void * GGML_RESTRICT vx, size_t bx,
+                                    const void * GGML_RESTRICT vy, size_t by, int nrc);
 static void ggml_vec_dot_tq3_1s_q8_0(int n, float * GGML_RESTRICT s, size_t bs,
                                        const void * GGML_RESTRICT vx, size_t bx,
                                        const void * GGML_RESTRICT vy, size_t by, int nrc);
@@ -436,6 +448,30 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
     [GGML_TYPE_TURBO4_0] = {
         .from_float               = (ggml_from_float_t) quantize_row_turbo4_0_ref,
         .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_turbo4_0_f32,
+        .vec_dot_type             = GGML_TYPE_F32,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_PLANAR3_0] = {
+        .from_float               = (ggml_from_float_t) quantize_row_planar3_0_ref,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_planar3_0_f32,
+        .vec_dot_type             = GGML_TYPE_F32,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_ISO3_0] = {
+        .from_float               = (ggml_from_float_t) quantize_row_iso3_0_ref,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_iso3_0_f32,
+        .vec_dot_type             = GGML_TYPE_F32,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_PLANAR4_0] = {
+        .from_float               = (ggml_from_float_t) quantize_row_planar4_0_ref,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_planar4_0_f32,
+        .vec_dot_type             = GGML_TYPE_F32,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_ISO4_0] = {
+        .from_float               = (ggml_from_float_t) quantize_row_iso4_0_ref,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_iso4_0_f32,
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
@@ -3494,6 +3530,82 @@ static void ggml_vec_dot_turbo4_0_f32(int n, float * GGML_RESTRICT s, size_t bs,
     float * tmp = (float *)malloc(n * sizeof(float));
     GGML_ASSERT(tmp != NULL);
     ggml_get_type_traits(GGML_TYPE_TURBO4_0)->to_float(vx, tmp, n);
+
+    const float * y = (const float *)vy;
+    float sum = 0.0f;
+    for (int i = 0; i < n; i++) {
+        sum += tmp[i] * y[i];
+    }
+    free(tmp);
+    *s = sum;
+}
+
+static void ggml_vec_dot_planar3_0_f32(int n, float * GGML_RESTRICT s, size_t bs,
+                                       const void * GGML_RESTRICT vx, size_t bx,
+                                       const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    GGML_ASSERT(nrc == 1);
+    GGML_UNUSED(bs); GGML_UNUSED(bx); GGML_UNUSED(by); GGML_UNUSED(nrc);
+
+    float * tmp = (float *)malloc(n * sizeof(float));
+    GGML_ASSERT(tmp != NULL);
+    ggml_get_type_traits(GGML_TYPE_PLANAR3_0)->to_float(vx, tmp, n);
+
+    const float * y = (const float *)vy;
+    float sum = 0.0f;
+    for (int i = 0; i < n; i++) {
+        sum += tmp[i] * y[i];
+    }
+    free(tmp);
+    *s = sum;
+}
+
+static void ggml_vec_dot_iso3_0_f32(int n, float * GGML_RESTRICT s, size_t bs,
+                                    const void * GGML_RESTRICT vx, size_t bx,
+                                    const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    GGML_ASSERT(nrc == 1);
+    GGML_UNUSED(bs); GGML_UNUSED(bx); GGML_UNUSED(by); GGML_UNUSED(nrc);
+
+    float * tmp = (float *)malloc(n * sizeof(float));
+    GGML_ASSERT(tmp != NULL);
+    ggml_get_type_traits(GGML_TYPE_ISO3_0)->to_float(vx, tmp, n);
+
+    const float * y = (const float *)vy;
+    float sum = 0.0f;
+    for (int i = 0; i < n; i++) {
+        sum += tmp[i] * y[i];
+    }
+    free(tmp);
+    *s = sum;
+}
+
+static void ggml_vec_dot_planar4_0_f32(int n, float * GGML_RESTRICT s, size_t bs,
+                                       const void * GGML_RESTRICT vx, size_t bx,
+                                       const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    GGML_ASSERT(nrc == 1);
+    GGML_UNUSED(bs); GGML_UNUSED(bx); GGML_UNUSED(by); GGML_UNUSED(nrc);
+
+    float * tmp = (float *)malloc(n * sizeof(float));
+    GGML_ASSERT(tmp != NULL);
+    ggml_get_type_traits(GGML_TYPE_PLANAR4_0)->to_float(vx, tmp, n);
+
+    const float * y = (const float *)vy;
+    float sum = 0.0f;
+    for (int i = 0; i < n; i++) {
+        sum += tmp[i] * y[i];
+    }
+    free(tmp);
+    *s = sum;
+}
+
+static void ggml_vec_dot_iso4_0_f32(int n, float * GGML_RESTRICT s, size_t bs,
+                                    const void * GGML_RESTRICT vx, size_t bx,
+                                    const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    GGML_ASSERT(nrc == 1);
+    GGML_UNUSED(bs); GGML_UNUSED(bx); GGML_UNUSED(by); GGML_UNUSED(nrc);
+
+    float * tmp = (float *)malloc(n * sizeof(float));
+    GGML_ASSERT(tmp != NULL);
+    ggml_get_type_traits(GGML_TYPE_ISO4_0)->to_float(vx, tmp, n);
 
     const float * y = (const float *)vy;
     float sum = 0.0f;

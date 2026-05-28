@@ -8,6 +8,26 @@
 
 Start building with open models.
 
+## Custom fork
+
+This fork uses a recent version of llama.cpp for turboquant support
+and defaults to q8_0/tb3 qunatization with flash attention: the suggested
+configuration from [TheTom's fork](https://github.com/TheTom/llama-cpp-turboquant) of llama.cpp.
+
+__WARNING__ inference has been tested with CPU and CUDA only.
+
+Runs in a proxmox ubuntu 24.04 container:
+
+```
+dev0: /dev/nvidia0,gid=44
+dev1: /dev/nvidiactl,gid=44
+dev2: /dev/nvidia-uvm,gid=44
+dev3: /dev/nvidia-uvm-tools,gid=44
+dev4: /dev/nvidia-caps/nvidia-cap1,gid=44
+dev5: /dev/nvidia-caps/nvidia-cap2,gid=44
+lxc.prlimit.memlock: unlimited
+```
+
 ## Download
 
 ### macOS

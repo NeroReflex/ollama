@@ -37,8 +37,15 @@ QWEN_KV_CONFIGS=(
 )
 
 QWEN_CTX="${QWEN_CTX:-131072}"
-QWEN_PREDICT="${QWEN_PREDICT:-1}"
+# NEVER set qwen coherence tests to tiny num_predict values (for example: 1).
+# Doing so truncates before final content and makes coherence checks meaningless.
+QWEN_PREDICT="${QWEN_PREDICT:-192}"
 QWEN_BATCH="${QWEN_BATCH:-1}"
+QWEN_THINK="${QWEN_THINK:-true}"
+QWEN_TIMEOUT="${QWEN_TIMEOUT:-900}"
+QWEN_MIN_GEN_TOKENS="${QWEN_MIN_GEN_TOKENS:-96}"
+QWEN_MIN_RESPONSE_WORDS="${QWEN_MIN_RESPONSE_WORDS:-50}"
+QWEN_PROMPT="${QWEN_PROMPT:-Think through the request, then provide a coherent 120-160 word explanation of why apples are commonly used in examples, with clear structure and no bullet points.}"
 
 QWEN_TEST_NAMES=(
   "turbo2_turbo2"
@@ -220,7 +227,7 @@ PY
   fi
 
   python3 - "$resp" "$server_log" "$kv" "$tname" "$model" "$ctx" "$pred" >> "$RESULTS_TSV" <<'PY'
-import json, re, sys
+import json, os, re, sys
 
 resp_path, slog_path, kv, tname, model, ctx, pred = sys.argv[1:]
 
@@ -259,8 +266,22 @@ load_failed = int(has(r"Load failed", slog) or has(r"signal arrived during cgo e
 done = bool(d.get("done"))
 error = d.get("error")
 
-status = "ok" if done and not error and cuda_detected and not load_failed else "failed"
+response_text = str(d.get("response") or "")
+response_word_count = len(re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?", response_text))
+qwen_tests = {"turbo2_turbo2", "turbo3_turbo3", "turbo4_turbo4", "q8_0_turbo2"}
+min_gen_tokens = int(os.environ.get("QWEN_MIN_GEN_TOKENS", "96"))
+min_response_words = int(os.environ.get("QWEN_MIN_RESPONSE_WORDS", "50"))
+coherent_qwen = True
+if tname in qwen_tests:
+  coherent_qwen = eval_count >= min_gen_tokens and response_word_count >= min_response_words
+
+status = "ok" if done and not error and cuda_detected and not load_failed and coherent_qwen else "failed"
 errtxt = "" if error is None else str(error)
+if not errtxt and tname in qwen_tests and not coherent_qwen:
+  errtxt = (
+    f"incoherent_output eval_count={eval_count} words={response_word_count} "
+    f"required_eval={min_gen_tokens} required_words={min_response_words}"
+  )
 
 print("\t".join([
     kv, tname, model, ctx, pred, status,
@@ -311,6 +332,7 @@ run_case() {
 {
   "model": "$model",
   "prompt": "$prompt",
+  "think": ${QWEN_THINK},
   "stream": false,
   "keep_alive": "0s",
   "options": {
@@ -435,12 +457,12 @@ run_qwen36_turbo_benchmark() {
     kv="${QWEN_KV_CONFIGS[$i]}"
     tname="${QWEN_TEST_NAMES[$i]}"
     run_case "$kv" "$QWEN_MODEL" "$tname" "$QWEN_CTX" "$QWEN_PREDICT" \
-      "Return exactly one lowercase word: apple." "300" "0" "$QWEN_BATCH"
+      "$QWEN_PROMPT" "$QWEN_TIMEOUT" "0" "$QWEN_BATCH"
   done
 }
 
 generate_report() {
-  QWEN_MODEL="$QWEN_MODEL" python3 - "$RESULTS_TSV" "$REPORT_MD" <<'PY'
+  QWEN_MODEL="$QWEN_MODEL" QWEN_CTX="$QWEN_CTX" QWEN_PREDICT="$QWEN_PREDICT" QWEN_BATCH="$QWEN_BATCH" QWEN_THINK="$QWEN_THINK" QWEN_PROMPT="$QWEN_PROMPT" QWEN_MIN_GEN_TOKENS="$QWEN_MIN_GEN_TOKENS" QWEN_MIN_RESPONSE_WORDS="$QWEN_MIN_RESPONSE_WORDS" python3 - "$RESULTS_TSV" "$REPORT_MD" <<'PY'
 import csv
 import datetime as dt
 import os
@@ -470,6 +492,10 @@ qwen_model = os.environ.get('QWEN_MODEL', 'qwen3.6:27b')
 qwen_ctx = os.environ.get('QWEN_CTX', '131072')
 qwen_pred = os.environ.get('QWEN_PREDICT', '1')
 qwen_batch = os.environ.get('QWEN_BATCH', '1')
+qwen_think = os.environ.get('QWEN_THINK', 'false')
+qwen_prompt = os.environ.get('QWEN_PROMPT', 'N/A')
+qwen_min_gen = os.environ.get('QWEN_MIN_GEN_TOKENS', '96')
+qwen_min_words = os.environ.get('QWEN_MIN_RESPONSE_WORDS', '50')
 
 small = row_map(by_test('small'))
 medium = row_map(by_test('medium'))
@@ -519,7 +545,10 @@ lines.append(f'**Model:** {qwen_model}')
 lines.append(f'**Context:** {qwen_ctx}')
 lines.append(f'**Predict:** {qwen_pred}')
 lines.append(f'**Batch:** {qwen_batch}')
-lines.append('**Prompt:** Return exactly one lowercase word: apple.')
+lines.append(f'**Think:** {qwen_think}')
+lines.append(f'**Min Gen Tokens:** {qwen_min_gen}')
+lines.append(f'**Min Response Words:** {qwen_min_words}')
+lines.append(f'**Prompt:** {qwen_prompt}')
 lines.append('')
 lines.append('| Test | KV Config | Status | Prompt Tokens | Prompt s | Prompt tok/s | Gen Tokens | Gen s | Gen tok/s | Total s | CUDA Validated | Error |')
 lines.append('|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|---|')

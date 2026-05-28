@@ -4,7 +4,8 @@
 DESTDIR ?= /tmp/ollama-install
 BUILD_DIR ?= build_optimized
 CMAKE_PRESET ?= CUDA 13
-JOBS ?= $(shell nproc)
+#JOBS ?= $(shell nproc)
+JOBS ?= 4
 
 # CPU feature detection
 CPU_FLAGS := $(shell lscpu 2>/dev/null | sed -n 's/^Flags:[[:space:]]*//p')
@@ -76,6 +77,7 @@ cmake-config: sync-patches
 		-DGGML_LTO=ON \
 		-DGGML_CUDA_GRAPHS=ON \
 		-DGGML_CUDA_FA=ON \
+                -DGGLM_GGML_AVX2=ON \
 		-DGGML_CCACHE=ON \
 		-DCMAKE_C_COMPILER=clang \
 		-DCMAKE_CXX_COMPILER=clang++ \

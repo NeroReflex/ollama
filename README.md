@@ -28,6 +28,14 @@ dev5: /dev/nvidia-caps/nvidia-cap2,gid=44
 lxc.prlimit.memlock: unlimited
 ```
 
+### Building
+
+Simplified building for ubuntu 24.04 VM with cudnn installed:
+
+```sh
+make -f Makefile.build
+```
+
 ## Download
 
 ### macOS

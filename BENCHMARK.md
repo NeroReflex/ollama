@@ -59,5 +59,5 @@
 
 ## Log Artifacts
 
-- Raw benchmark TSV: /home/build/ollama/tmp-logs/bench_all_20260528_104550/results.tsv
+- Raw benchmark TSV: tmp-logs/bench_all_20260528_104550/results.tsv
 - Per-run server and response logs are in the same run directory under `tmp-logs`.

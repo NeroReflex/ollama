@@ -3,7 +3,7 @@ import json
 import os
 from pathlib import Path
 
-log_dir = Path("/home/build/ollama/tmp-logs")
+log_dir = Path("./tmp-logs")
 
 results = {}
 

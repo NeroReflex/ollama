@@ -99,7 +99,6 @@ Before touching code, identify:
 ### Step 2: Create a Feature Branch in Vendor Tree
 
 ```bash
-cd /home/build/ollama
 
 # Clean the vendor tree to base commit
 make -f Makefile.sync clean
@@ -142,7 +141,6 @@ vim ggml/src/ggml-cuda/fattn.cu
 Build and test before formalizing as a patch:
 
 ```bash
-cd /home/build/ollama
 
 # Copy modified files to build source
 # (or rsync the entire tree)
@@ -162,7 +160,7 @@ If successful, proceed to creating the patch. If you encounter issues, fix them 
 ### Step 1: Commit Your Changes in Vendor
 
 ```bash
-cd /home/build/ollama/llama/vendor
+cd llama/vendor
 
 # Stage all changes
 git add -A
@@ -186,7 +184,6 @@ git log --oneline -1
 ### Step 2: Generate Patch File
 
 ```bash
-cd /home/build/ollama
 
 # Generate patch from base commit (ec98e2002) to your feature branch
 git -C llama/vendor format-patch \
@@ -202,7 +199,7 @@ git -C llama/vendor format-patch \
 ### Step 3: Number and Name the Patch
 
 ```bash
-cd /home/build/ollama/llama/patches
+cd llama/patches
 
 # List existing patches to find next number
 ls -1 *.patch | tail -5
@@ -219,7 +216,6 @@ ls -1 *.patch | tail -3
 ### Step 4: Verify the Patch Works
 
 ```bash
-cd /home/build/ollama
 
 # Clean and reset vendor tree
 make -f Makefile.sync clean
@@ -238,7 +234,6 @@ tail -20 llama/patches/.*.patched 2>/dev/null || echo "No failures"
 ### Step 5: Test the Patched Build
 
 ```bash
-cd /home/build/ollama
 
 # Rebuild from scratch with new patch applied
 make -f Makefile.build clean
@@ -264,7 +259,6 @@ sudo apt-get install -y ninja-build
 ### Full Build
 
 ```bash
-cd /home/build/ollama
 
 # Clean and apply patches
 make -f Makefile.sync clean apply-patches
@@ -316,7 +310,6 @@ sudo apt-get install -y ninja-build
 
 ```bash
 # Run existing tests (if available)
-cd /home/build/ollama
 make test  # or ./run-tests.sh
 ```
 
@@ -324,7 +317,6 @@ make test  # or ./run-tests.sh
 
 ```bash
 # Small benchmark (2K context, 64 token prediction)
-cd /home/build/ollama
 OLLAMA_GPU_LAYERS=999 \
 OLLAMA_FLASH_ATTENTION=1 \
 OLLAMA_KV_CACHE_TYPE=q8_0/turbo3_0 \
@@ -403,7 +395,7 @@ Impact:
 If patch application fails (`git am` conflict):
 
 ```bash
-cd /home/build/ollama/llama/vendor
+cd llama/vendor
 
 # Resolve conflicts in git
 git diff  # see conflicts
@@ -415,7 +407,7 @@ vim <conflicted-file>
 git am --continue
 
 # Update patch file
-cd /home/build/ollama
+cd ../../
 make -f Makefile.sync format-patches
 ```
 
@@ -445,7 +437,6 @@ This example walks through the complete process of adding planar3/iso3 GPU kerne
 ### Phase 1: Setup
 
 ```bash
-cd /home/build/ollama
 
 # Ensure vendor tree is clean and patched
 make -f Makefile.sync clean
@@ -471,7 +462,6 @@ vim ggml/src/ggml-cuda/fattn.cu          # Register kernel instantiation
 ### Phase 3: Local Testing
 
 ```bash
-cd /home/build/ollama
 
 # Copy changes to build tree
 cp llama/vendor/ggml/src/ggml-cuda/{planar,iso}-quant.cuh \
@@ -488,7 +478,7 @@ OLLAMA_KV_CACHE_TYPE=q8_0/iso3_0 ./benchmark-direct.sh
 ### Phase 4: Formalize as Patch
 
 ```bash
-cd /home/build/ollama/llama/vendor
+cd ollama/llama/vendor
 
 # Commit changes
 git add -A
@@ -500,7 +490,6 @@ git commit -m "Add planar3/iso3 GPU kernel dequantization
 - Modified: fattn.cu to instantiate mixed KV cache kernels"
 
 # Generate patch
-cd /home/build/ollama
 git -C llama/vendor format-patch \
     --no-signature --no-numbered --zero-commit \
     -o ../../llama/patches/ \
@@ -513,8 +502,6 @@ mv llama/patches/0001-*.patch llama/patches/0038-add-rotorquant-gpu-kernels.patc
 ### Phase 5: Verify
 
 ```bash
-cd /home/build/ollama
-
 # Clean and re-apply patches
 make -f Makefile.sync clean
 make -f Makefile.sync apply-patches
@@ -532,7 +519,7 @@ OLLAMA_GPU_LAYERS=999 ./benchmark-direct.sh
 ## File Organization Reference
 
 ```
-/home/build/ollama/
+ollama/
 ├── CMakeLists.txt              # Main build configuration
 ├── CMakePresets.json           # Build presets (CUDA 13, etc.)
 ├── Makefile.build              # Main build orchestration

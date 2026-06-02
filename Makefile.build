@@ -105,6 +105,7 @@ build-go: build-cpp
 	go build \
 		$(GO_LDFLAGS) \
 		-o $(BUILD_DIR)/ollama \
+		-buildvcs=false \
 		.
 	@echo "✓ Go build complete: $(BUILD_DIR)/ollama"
 

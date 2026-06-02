@@ -494,12 +494,16 @@ func defaultVHeadReordered(arch string) bool {
 	return arch == "qwen35" || arch == "qwen35moe"
 }
 
-func inferRecurrentLayers(headCountKV []uint64, numLayers int, fullAttentionInterval uint32) ([]bool, error) {
+func inferRecurrentLayers(headCountKV []uint64, numLayers int, fullAttentionInterval uint32, nextnPredictLayers uint32) ([]bool, error) {
 	isRecurrent := make([]bool, numLayers)
+	baseLayers := numLayers - int(nextnPredictLayers)
+	if baseLayers < 0 {
+		return nil, fmt.Errorf("qwen3next: invalid nextn_predict_layers (%d) for block_count (%d)", nextnPredictLayers, numLayers)
+	}
 
 	hasZero := false
 	hasFull := false
-	for i := range numLayers {
+	for i := range baseLayers {
 		if i >= len(headCountKV) {
 			continue
 		}
@@ -522,18 +526,18 @@ func inferRecurrentLayers(headCountKV []uint64, numLayers int, fullAttentionInte
 	// per-layer recurrent flags. Derive the hybrid layout from the interval.
 	interval := int(fullAttentionInterval)
 	if interval == 0 {
-		interval = min(4, numLayers)
+		interval = min(4, baseLayers)
 	}
 	if interval <= 0 {
-		return nil, fmt.Errorf("qwen3next: invalid block_count (%d)", numLayers)
+		return nil, fmt.Errorf("qwen3next: invalid block_count (%d)", baseLayers)
 	}
-	if interval > numLayers {
-		return nil, fmt.Errorf("qwen3next: full_attention_interval (%d) exceeds block_count (%d)", interval, numLayers)
+	if interval > baseLayers {
+		return nil, fmt.Errorf("qwen3next: full_attention_interval (%d) exceeds base_layers (%d)", interval, baseLayers)
 	}
 
 	hasZero = false
 	hasFull = false
-	for i := range numLayers {
+	for i := range baseLayers {
 		isRecurrent[i] = (i+1)%interval != 0
 		if isRecurrent[i] {
 			hasZero = true
@@ -563,7 +567,7 @@ func New(c fs.Config) (model.Model, error) {
 		headCountKV = hc.HeadCountKV()
 	}
 
-	isRecurrent, err := inferRecurrentLayers(headCountKV, numLayers, c.Uint("full_attention_interval"))
+	isRecurrent, err := inferRecurrentLayers(headCountKV, numLayers, c.Uint("full_attention_interval"), c.Uint("nextn_predict_layers", 0))
 	if err != nil {
 		return nil, err
 	}

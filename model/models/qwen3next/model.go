@@ -50,6 +50,9 @@ type Options struct {
 	// Per-layer type from GGUF metadata
 	isRecurrent []bool
 
+	// MTP config
+	nextnPredictLayers uint32
+
 	// RoPE mode config (used by qwen35/qwen35moe)
 	mropeSections    []int
 	mropeInterleaved bool
@@ -224,6 +227,16 @@ func (l *Layer) Forward(ctx ml.Context, layer int, hiddenStates, positions, outp
 	return hiddenStates.Add(ctx, ffnResidual), nil
 }
 
+// MTPHead holds the MTP (Multi-Token Prediction) specific tensors.
+// These are stored under blk.IL.nextn.* in the GGUF file and must be
+// loaded manually since the gguf tag system cannot resolve nested paths.
+type MTPHead struct {
+	EhProj  *nn.Linear `gguf:"nextn.eh_proj"`
+	Enorm   *nn.RMSNorm
+	Hnorm   *nn.RMSNorm
+	HeadNorm *nn.RMSNorm
+}
+
 // Model is the main Qwen3-Next model
 type Model struct {
 	model.Base
@@ -235,6 +248,9 @@ type Model struct {
 
 	Layers []Layer              `gguf:"blk"`
 	Vision *qwen3vl.VisionModel `gguf:"v"`
+
+	// MTP (Multi-Token Prediction) head - loaded manually from blk.IL.nextn.*
+	MTP *MTPHead
 
 	ImageProcessor *qwen3vl.ImageProcessor
 
@@ -391,11 +407,16 @@ func (m *Model) Forward(ctx ml.Context, batch input.Batch) (ml.Tensor, error) {
 
 		cache := m.Cache.(*HybridCache)
 		m.Options.masks = nil
+		baseLayers := len(m.Layers) - int(m.nextnPredictLayers)
+
 		for i, layer := range m.Layers {
+			if baseLayers > 0 && i >= baseLayers {
+				break
+			}
 			cache.SetLayer(i)
 
 			var outputs ml.Tensor
-			if i == len(m.Layers)-1 {
+			if i == baseLayers-1 {
 				outputs = batch.Outputs
 			}
 
@@ -418,11 +439,16 @@ func (m *Model) Forward(ctx ml.Context, batch input.Batch) (ml.Tensor, error) {
 	// Masks are allocated lazily only for chunked recurrent prefill.
 	m.Options.masks = nil
 
+	baseLayers := len(m.Layers) - int(m.nextnPredictLayers)
+
 	for i, layer := range m.Layers {
+		if baseLayers > 0 && i >= baseLayers {
+			break
+		}
 		cache.SetLayer(i)
 
 		var outputs ml.Tensor
-		if i == len(m.Layers)-1 {
+		if i == baseLayers-1 {
 			outputs = batch.Outputs
 		}
 
@@ -477,6 +503,50 @@ func (m *Model) Validate() error {
 	return nil
 }
 
+func (m *Model) PostLoad() error {
+	if m.nextnPredictLayers == 0 {
+		return nil
+	}
+
+	baseLayers := len(m.Layers) - int(m.nextnPredictLayers)
+	if baseLayers < 0 || baseLayers >= len(m.Layers) {
+		return fmt.Errorf("qwen3next: invalid MTP layer index: baseLayers=%d, total=%d", baseLayers, len(m.Layers))
+	}
+
+	mtpIdx := baseLayers
+	prefix := fmt.Sprintf("blk.%d.nextn", mtpIdx)
+
+	m.MTP = &MTPHead{}
+
+	if t := m.Backend().Get(prefix + ".eh_proj.weight"); t != nil {
+		m.MTP.EhProj = &nn.Linear{Weight: t}
+	}
+	if t := m.Backend().Get(prefix + ".enorm.weight"); t != nil {
+		m.MTP.Enorm = &nn.RMSNorm{Weight: t}
+	}
+	if t := m.Backend().Get(prefix + ".hnorm.weight"); t != nil {
+		m.MTP.Hnorm = &nn.RMSNorm{Weight: t}
+	}
+	if t := m.Backend().Get(prefix + ".shared_head_norm.weight"); t != nil {
+		m.MTP.HeadNorm = &nn.RMSNorm{Weight: t}
+	}
+
+	if m.MTP.EhProj == nil {
+		return fmt.Errorf("qwen3next: MTP missing %s.eh_proj.weight", prefix)
+	}
+	if m.MTP.Enorm == nil {
+		return fmt.Errorf("qwen3next: MTP missing %s.enorm.weight", prefix)
+	}
+	if m.MTP.Hnorm == nil {
+		return fmt.Errorf("qwen3next: MTP missing %s.hnorm.weight", prefix)
+	}
+	if m.MTP.HeadNorm == nil {
+		return fmt.Errorf("qwen3next: MTP missing %s.shared_head_norm.weight", prefix)
+	}
+
+	return nil
+}
+
 func (m *Model) Shift(ctx ml.Context, layer int, key, shift ml.Tensor) (ml.Tensor, error) {
 	m.positionCache = nil
 	if len(m.mropeSections) > 0 {
@@ -515,7 +585,7 @@ func inferRecurrentLayers(headCountKV []uint64, numLayers int, fullAttentionInte
 			hasFull = true
 		}
 	}
-	if hasZero && hasFull {
+	if hasZero && hasFull && baseLayers == numLayers {
 		return isRecurrent, nil
 	}
 	if !hasFull {
@@ -535,7 +605,7 @@ func inferRecurrentLayers(headCountKV []uint64, numLayers int, fullAttentionInte
 		return nil, fmt.Errorf("qwen3next: full_attention_interval (%d) exceeds base_layers (%d)", interval, baseLayers)
 	}
 
-	hasZero = false
+hasZero = false
 	hasFull = false
 	for i := range baseLayers {
 		isRecurrent[i] = (i+1)%interval != 0
@@ -544,6 +614,15 @@ func inferRecurrentLayers(headCountKV []uint64, numLayers int, fullAttentionInte
 		} else {
 			hasFull = true
 		}
+	}
+
+	// MTP layers (beyond baseLayers) are always full-attention, never recurrent.
+	for i := baseLayers; i < numLayers; i++ {
+		isRecurrent[i] = false
+	}
+
+	if hasZero && hasFull {
+		return isRecurrent, nil
 	}
 	if !hasZero || !hasFull {
 		return nil, fmt.Errorf("qwen3next: full_attention_interval (%d) does not produce a mixed recurrent/full layout", interval)
@@ -635,6 +714,7 @@ func New(c fs.Config) (model.Model, error) {
 		convKernelSize:        int(c.Uint("ssm.conv_kernel")),
 		vHeadReordered:        c.Bool("ssm.v_head_reordered", defaultVHeadReordered(c.Architecture())),
 		isRecurrent:           isRecurrent,
+		nextnPredictLayers:    c.Uint("nextn_predict_layers", 0),
 		mropeSections: slices.Collect(func(yield func(int) bool) {
 			for _, section := range mropeSections {
 				if !yield(int(section)) {
